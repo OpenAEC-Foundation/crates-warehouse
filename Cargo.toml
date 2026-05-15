@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "cpt-core",
     "isso51-api",
     "isso51-core",
     "isso51-ifcx",

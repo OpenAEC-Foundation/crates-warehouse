@@ -6,6 +6,7 @@
 pub mod coords;
 pub mod domain;
 pub mod error;
+pub mod gef;
 pub mod layers;
 pub mod robertson;
 

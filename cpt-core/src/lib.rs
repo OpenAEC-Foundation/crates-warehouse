@@ -5,6 +5,7 @@
 
 pub mod domain;
 pub mod error;
+pub mod robertson;
 
 pub use domain::{Cpt, MeasurementPoint, Metadata, Position};
 pub use error::CptError;

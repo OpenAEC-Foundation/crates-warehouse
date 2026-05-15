@@ -1,0 +1,32 @@
+[package]
+name = "isso51-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "REST API for ISSO 51 heat loss calculations"
+
+[dependencies]
+isso51-core = { path = "../isso51-core" }
+isso51-ifcx = { path = "../isso51-ifcx" }
+nta8800-cooling = { path = "../nta8800-cooling" }
+nta8800-model = { path = "../nta8800-model" }
+nta8800-tables = { path = "../nta8800-tables" }
+openaec-project-shared = { path = "../openaec-project-shared" }
+openaec-cloud = { git = "https://github.com/OpenAEC-Foundation/openaec-cloud.git" }
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "0.0.12"
+bytes = "1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+sha2 = "0.10"
+dotenvy = "0.15"
+tempfile = "3"

@@ -3,6 +3,7 @@
 //! Parses GEF and BRO-XML CPT files, classifies measurement points using
 //! Robertson 1990 SBT, detects soil layers, and builds standardized reports.
 
+pub mod bro;
 pub mod coords;
 pub mod domain;
 pub mod error;

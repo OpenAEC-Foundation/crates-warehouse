@@ -10,12 +10,14 @@ pub mod error;
 pub mod gef;
 pub mod layers;
 pub mod plot;
+pub mod report;
 pub mod robertson;
 
 pub use domain::{Cpt, MeasurementPoint, Metadata, Position};
 pub use error::CptError;
 pub use layers::{detect_layers, Layer};
 pub use plot::render_cpt_svg;
+pub use report::{build as build_report, ProjectMeta};
 
 pub use gef::parse as parse_gef;
 pub use bro::parse as parse_bro;

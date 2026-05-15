@@ -25,7 +25,7 @@ fn parses_2600356_series() {
     for n in 1..=6 {
         let name = format!("2600356_0{}.GEF", n);
         let text = read_fixture(&name);
-        let cpt = parse(&text).expect(&format!("{} should parse", name));
+        let cpt = parse(&text).unwrap_or_else(|_| panic!("{} should parse", name));
         assert!(!cpt.points.is_empty(), "{} should have points", name);
         // Real-world series should have RD position
         assert!(cpt.position.is_some(), "{} should have RD position", name);

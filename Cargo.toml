@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "cpt-core",
     "isso51-api",
     "isso51-core",
     "isso51-ifcx",
@@ -19,9 +20,66 @@ members = [
     "nta8800-transmission",
     "nta8800-ventilation",
     "openaec-project-shared",
+    "openaec-core",
+    "openaec-layout",
+    "openaec-engine",
+    "openaec-cli",
+    "openaec-ffi",
+    "openaec-server",
 ]
 
 [workspace.package]
 version = "0.1.1"
 edition = "2021"
 license = "MIT"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# PDF generation
+printpdf = "0.7"
+ttf-parser = "0.25"
+lopdf = "0.39"
+
+# Image processing
+image = "0.25"
+resvg = "0.44"
+
+# Fonts
+fontdb = "0.22"
+
+# HTTP / networking
+reqwest = { version = "0.12", features = ["json"] }
+base64 = "0.22"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Web server
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# Database (0.31 to align with isso51-core; openaec-server source uses only common API)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Auth
+jsonwebtoken = "9"
+bcrypt = "0.17"
+
+# Cloud storage
+openaec-cloud = { git = "https://github.com/OpenAEC-Foundation/openaec-cloud.git" }
+uuid = { version = "1", features = ["v4"] }
+
+# FFI
+libc = "0.2"
+
+# Testing
+tempfile = "3"

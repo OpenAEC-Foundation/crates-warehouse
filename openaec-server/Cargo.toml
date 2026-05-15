@@ -1,0 +1,24 @@
+[package]
+name = "openaec-server"
+description = "Axum API server for OpenAEC report generation"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+openaec-core = { path = "../openaec-core" }
+openaec-engine = { path = "../openaec-engine" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rusqlite = { workspace = true }
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
+openaec-cloud = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }

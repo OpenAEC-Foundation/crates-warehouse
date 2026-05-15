@@ -1,0 +1,19 @@
+[package]
+name = "cpt-core"
+description = "CPT (Cone Penetration Test) domain library: GEF + BRO-XML parsers, Robertson classification, RD coordinates, report building"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+base64 = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+quick-xml = "0.36"
+svg = "0.17"
+openaec-core = { path = "../openaec-core" }
+
+[dev-dependencies]
+chrono = "0.4"

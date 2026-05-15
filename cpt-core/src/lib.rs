@@ -5,7 +5,9 @@
 
 pub mod domain;
 pub mod error;
+pub mod layers;
 pub mod robertson;
 
 pub use domain::{Cpt, MeasurementPoint, Metadata, Position};
 pub use error::CptError;
+pub use layers::{detect_layers, Layer};

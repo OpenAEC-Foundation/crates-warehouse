@@ -13,6 +13,9 @@ base64 = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 quick-xml = "0.36"
 svg = "0.17"
+resvg = { workspace = true }
+printpdf = { workspace = true }
+image = { workspace = true }
 openaec-core = { path = "../openaec-core" }
 
 [dev-dependencies]

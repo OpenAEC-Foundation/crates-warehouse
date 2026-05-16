@@ -49,10 +49,14 @@ pub fn parse(text: &str) -> Result<Cpt, CptError> {
         metadata: Metadata {
             project_name: header.project_name.clone(),
             project_number: header.project_id.clone(),
-            date: header.date,
+            // Prefer the actual measurement date (#STARTDATE) over the file
+            // write date (#FILEDATE) — matches bedrock-engineer/gef-parser-ts
+            // and is what shows up in field reports.
+            date: header.start_date.or(header.date),
             equipment: header.company_id.clone(),
             ground_level_nap: header.z_nap,
             source_file: String::new(),
+            extra: header.extra.clone(),
         },
         position,
         points,
@@ -95,7 +99,11 @@ fn build_point(nums: &[f64], header: &GefHeader) -> Option<MeasurementPoint> {
 
         match spec.field {
             GefField::Length | GefField::Depth => {
-                if let Some(v) = value { p.depth = v; have_depth = true; }
+                // Normalize sign — some GEFs (especially Belgian flavor) record
+                // depth as a negative value below ground. Mirror bedrock-engineer's
+                // gef-parser-ts behavior: take the absolute value so downstream
+                // code can rely on "positive depth = below ground".
+                if let Some(v) = value { p.depth = v.abs(); have_depth = true; }
             }
             GefField::Qc => p.qc = value,
             GefField::Fs => p.fs = value,

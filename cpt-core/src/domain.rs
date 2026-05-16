@@ -3,6 +3,8 @@
 //! All types derive `Serialize + Deserialize` so they cross the Tauri IPC
 //! boundary directly. Numeric fields use `f64` to match GEF/BRO source precision.
 
+use std::collections::BTreeMap;
+
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +30,14 @@ pub struct Metadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ground_level_nap: Option<f64>,
     pub source_file: String,
+    /// Verbatim "extra" metadata fields — anything the parser captured
+    /// from the source file that doesn't map to a typed field above.
+    /// For GEF: every `#KEYWORD= value` line that isn't already mapped.
+    /// For BRO: top-level brocom + cptcommon properties.
+    /// Stored as a BTreeMap so the JSON output is stable (alphabetical),
+    /// which makes the LeftPanel "Bestandsmetadata" display deterministic.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

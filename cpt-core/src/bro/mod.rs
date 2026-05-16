@@ -9,6 +9,8 @@
 
 pub mod columns;
 
+use std::collections::BTreeMap;
+
 use chrono::NaiveDate;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -30,6 +32,7 @@ pub fn parse(xml: &str) -> Result<Cpt, CptError> {
     let mut z: Option<f64> = None;
     let mut date: Option<NaiveDate> = None;
     let mut data_block: Option<String> = None;
+    let mut extras: BTreeMap<String, String> = BTreeMap::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -54,6 +57,7 @@ pub fn parse(xml: &str) -> Result<Cpt, CptError> {
                     &mut z,
                     &mut date,
                     &mut data_block,
+                    &mut extras,
                 );
             }
             Ok(Event::Empty(_)) => {
@@ -75,7 +79,14 @@ pub fn parse(xml: &str) -> Result<Cpt, CptError> {
     let id = id.ok_or_else(|| CptError::InvalidBro("missing broId".into()))?;
     let block = data_block
         .ok_or_else(|| CptError::InvalidBro("missing cptResult values data block".into()))?;
-    let points = parse_data_block(&block, z);
+    let mut points = parse_data_block(&block, z);
+
+    // BRO data arrays are not guaranteed to be sorted by depth — some files
+    // (e.g. CPT000000000787) interleave segments out of order. The chart
+    // renders points as a single polyline, so unsorted input creates a
+    // criss-crossing zigzag. Sort ascending by depth so adjacent points in
+    // the polyline are also adjacent in the borehole.
+    points.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
 
     let position = match (x, y) {
         (Some(x), Some(y)) => Some(Position {
@@ -95,6 +106,7 @@ pub fn parse(xml: &str) -> Result<Cpt, CptError> {
             equipment: None,
             ground_level_nap: z,
             source_file: String::new(),
+            extra: extras,
         },
         position,
         points,
@@ -119,11 +131,77 @@ fn handle_text(
     z: &mut Option<f64>,
     date: &mut Option<NaiveDate>,
     data_block: &mut Option<String>,
+    extras: &mut BTreeMap<String, String>,
 ) {
     let last = match path.last() {
         Some(s) => s.as_str(),
         None => return,
     };
+
+    // Curated list of BRO single-text fields we surface as "extras".
+    // Skips the big data-block fields (values, pos, offset) and anything
+    // already mapped to a typed Metadata field.
+    //
+    // The list mirrors the field set bedrock-engineer/bro-xml-parser-ts
+    // exposes as "metadata" — adds qualityClass, accuracyClass, sondage
+    // identifiers, calibration descriptors, and the typed conePenetrometer
+    // fields a reviewer needs but which don't fit our typed Metadata
+    // schema. All are passively read; missing ones are silently skipped.
+    const EXTRA_FIELDS: &[&str] = &[
+        "objectIdAccountableParty",
+        "qualityRegime",
+        "qualityClass",
+        "accuracyClass",
+        "deliveryContext",
+        "surveyPurpose",
+        "cptStandard",
+        "researchOperator",
+        "researchReportSubmittedBy",
+        "stopCriterion",
+        "cptMethod",
+        "predrilledDepth",
+        "finalDepth",
+        "finalDepthBoring",
+        "groundwaterLevel",
+        "conePenetrometerType",
+        "conePenetrometerName",
+        "conePenetrometerDescription",
+        "coneSurfaceArea",
+        "coneSurfaceQuotient",
+        "frictionSleeveSurfaceArea",
+        "frictionSleeveSurfaceQuotient",
+        "frictionSleeveDistance",
+        "conePresentationLength",
+        "linearSlopeDetected",
+        "verticalDatum",
+        "localVerticalReferencePoint",
+        "horizontalPositioningMethod",
+        "deliveredVerticalPositioningMethod",
+        // Calibration / dissipation context — the parser still ignores the
+        // dissipationTest data array (we want cptResult/values only) but
+        // surfacing the descriptive fields lets reviewers see whether one
+        // was present and roughly how it was set up.
+        "calibrationOperator",
+        "calibrationDate",
+        "dissipationTestPerformed",
+        // Sondage / survey identity
+        "sondageIdAccountableParty",
+        "sondageId",
+    ];
+    if EXTRA_FIELDS.contains(&last) {
+        let trimmed = txt.trim();
+        if !trimmed.is_empty() {
+            extras
+                .entry(last.to_string())
+                .and_modify(|prev| {
+                    if !prev.contains(trimmed) {
+                        prev.push_str(" | ");
+                        prev.push_str(trimmed);
+                    }
+                })
+                .or_insert_with(|| trimmed.to_string());
+        }
+    }
 
     match last {
         "broId" if id.is_none() => *id = Some(txt.to_string()),

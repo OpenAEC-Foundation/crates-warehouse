@@ -4,6 +4,8 @@
 //! followed by `=` and a comma-or-whitespace separated value list.
 //! `#EOH=` (end of header) marks the start of the data block.
 
+use std::collections::BTreeMap;
+
 use crate::error::CptError;
 use super::columns::{from_quantity, GefField};
 
@@ -13,12 +15,22 @@ pub struct GefHeader {
     pub project_id: Option<String>,
     pub project_name: Option<String>,
     pub company_id: Option<String>,
+    /// Test start date (`#STARTDATE`) — the date the measurement was taken.
+    /// Distinct from the `date` field below which mirrors `#FILEDATE`
+    /// (when the file was written). When both are present we prefer
+    /// STARTDATE in `Metadata::date` since it's what end users care about.
+    pub start_date: Option<chrono::NaiveDate>,
     pub date: Option<chrono::NaiveDate>,
     pub x_rd: Option<f64>,
     pub y_rd: Option<f64>,
     pub z_nap: Option<f64>,
     pub columns: Vec<ColumnSpec>,
     pub column_void: Vec<(usize, f64)>, // (1-based column index, void value)
+    /// Every `#KEYWORD= value` line that isn't already captured into a typed
+    /// field above. Repeated keys (eg. multiple `#COLUMNINFO=` lines) are
+    /// joined with " | " so nothing is lost. Used to populate
+    /// `Metadata::extra` for the "Bestandsmetadata" panel — lossy but cheap.
+    pub extra: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,15 +55,51 @@ pub fn parse_header(lines: &[&str]) -> Result<(GefHeader, usize), CptError> {
             "PROJECTID" => header.project_id = Some(value.to_string()),
             "PROJECTNAME" => header.project_name = Some(value.to_string()),
             "COMPANYID" => header.company_id = Some(value.split(',').next().unwrap_or(value).trim().to_string()),
+            // STARTDATE = real measurement date; FILEDATE = file write date.
+            // Stash both; prefer STARTDATE in Metadata::date since that's
+            // what shows up in reports and tooltips.
+            "STARTDATE" => {
+                header.start_date = parse_filedate(value);
+                push_extra(&mut header.extra, &key, value);
+            }
             "FILEDATE" => header.date = parse_filedate(value),
             "XYID" => parse_xyid(value, &mut header),
             "ZID" => parse_zid(value, &mut header),
-            "COLUMNINFO" => parse_columninfo(value, &mut header),
-            "COLUMNVOID" => parse_columnvoid(value, &mut header),
-            _ => {} // ignore other keys for now
+            "COLUMNINFO" => {
+                parse_columninfo(value, &mut header);
+                // Also surface raw column info to the user — the typed
+                // Vec<ColumnSpec> is for the parser's own use.
+                push_extra(&mut header.extra, &key, value);
+            }
+            "COLUMNVOID" => {
+                parse_columnvoid(value, &mut header);
+                push_extra(&mut header.extra, &key, value);
+            }
+            // Skip purely structural / consumed-elsewhere keys; everything
+            // else gets surfaced verbatim under "Bestandsmetadata".
+            "EOH" | "GEFID" | "COLUMNSEPARATOR" | "RECORDSEPARATOR" | "DATAFORMAT"
+            | "COLUMN" => {
+                push_extra(&mut header.extra, &key, value);
+            }
+            _ => {
+                push_extra(&mut header.extra, &key, value);
+            }
         }
     }
     Err(CptError::InvalidGef("missing #EOH terminator".into()))
+}
+
+/// Append `value` to `extras[key]`, joining repeats with " | ".
+/// GEF headers can have many lines for the same key (eg. `#MEASUREMENTTEXT=`)
+/// — a flat map would silently drop all but the last, so we concatenate.
+fn push_extra(extras: &mut BTreeMap<String, String>, key: &str, value: &str) {
+    extras
+        .entry(key.to_string())
+        .and_modify(|prev| {
+            prev.push_str(" | ");
+            prev.push_str(value);
+        })
+        .or_insert_with(|| value.to_string());
 }
 
 fn parse_filedate(value: &str) -> Option<chrono::NaiveDate> {

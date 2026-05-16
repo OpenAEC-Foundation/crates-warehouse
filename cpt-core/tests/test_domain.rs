@@ -11,6 +11,7 @@ fn cpt_serializes_to_json() {
             equipment: None,
             ground_level_nap: Some(2.5),
             source_file: "test.gef".to_string(),
+            ..Default::default()
         },
         position: Some(Position {
             x_rd: 100_000.0,

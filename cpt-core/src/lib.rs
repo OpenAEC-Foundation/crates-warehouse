@@ -8,14 +8,20 @@ pub mod coords;
 pub mod domain;
 pub mod error;
 pub mod gef;
+pub mod ifc;
+pub mod ifcgis;
 pub mod layers;
+pub mod pdf;
 pub mod plot;
 pub mod report;
 pub mod robertson;
+pub mod write;
 
 pub use domain::{Cpt, MeasurementPoint, Metadata, Position};
 pub use error::CptError;
+pub use ifc::{write_ifc4x3, write_ifcx};
 pub use layers::{detect_layers, Layer};
+pub use pdf::generate_single_cpt_pdf_bytes;
 pub use plot::render_cpt_svg;
 pub use report::{build as build_report, ProjectMeta};
 

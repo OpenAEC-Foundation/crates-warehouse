@@ -18,7 +18,7 @@ use openaec_core::schema::{
 use serde_json::Value;
 
 use crate::domain::Cpt;
-use crate::plot::render_cpt_svg;
+use crate::plot::render_cpt_png_with_meta;
 
 /// Project-level metadata supplied by the user / Tauri frontend.
 ///
@@ -50,20 +50,29 @@ pub fn build(cpts: &[Cpt], project: &ProjectMeta) -> ReportData {
     extra_fields.insert("Projectnummer".to_string(), project.project_number.clone());
     extra_fields.insert("Datum".to_string(), date_iso.clone());
 
-    let cover = Some(Cover {
-        subtitle: Some(project.location.clone()),
-        image: None,
-        extra_fields,
-    });
+    // If a single CPT is requested we skip the cover and coordinate table
+    // so the CPT plot is the *only* page — matching the reference layout.
+    // For multi-CPT builds we keep the existing cover + table for context.
+    let single = cpts.len() == 1;
+
+    let cover = if single { None } else {
+        Some(Cover {
+            subtitle: Some(project.location.clone()),
+            image: None,
+            extra_fields,
+        })
+    };
 
     let mut sections: Vec<Section> = Vec::with_capacity(cpts.len() + 1);
 
-    // 1. Coordinate table section
-    sections.push(coord_table_section(cpts));
+    // 1. Coordinate table section (only when more than one CPT)
+    if !single {
+        sections.push(coord_table_section(cpts));
+    }
 
     // 2. One page per CPT
     for cpt in cpts {
-        sections.push(cpt_page_section(cpt));
+        sections.push(cpt_page_section(cpt, project));
     }
 
     ReportData {
@@ -103,30 +112,44 @@ fn coord_table_section(cpts: &[Cpt]) -> Section {
     let rows: Vec<Vec<Value>> = cpts
         .iter()
         .map(|cpt| {
-            let (x, y, z) = match cpt.position {
-                Some(p) => (
-                    Value::from(round2(p.x_rd)),
-                    Value::from(round2(p.y_rd)),
-                    p.z_nap
-                        .map(|v| Value::from(round2(v)))
-                        .unwrap_or(Value::Null),
-                ),
-                None => (Value::Null, Value::Null, Value::Null),
+            // Position cells — empty string when missing so the table still
+            // lays out evenly. Strings (not JSON numbers) so trailing zeros
+            // are preserved in the rendered text ("132782.50" stays).
+            let (x_cell, y_cell) = match cpt.position {
+                Some(p) => (fmt_coord(p.x_rd), fmt_coord(p.y_rd)),
+                None => (Value::from(""), Value::from("")),
             };
 
+            // Z-NAP — prefer position.z_nap, fall back to the metadata
+            // ground level (older GEFs leak it through `#ZID` only).
+            // Sign is preserved verbatim: a ground level below NAP shows
+            // as `-1.06`, above NAP as `1.06`.
+            let z_value: Option<f64> = cpt
+                .position
+                .and_then(|p| p.z_nap)
+                .or(cpt.metadata.ground_level_nap);
+            let z_cell = match z_value {
+                Some(z) => fmt_depth(z),
+                None => Value::from(""),
+            };
+
+            // Diepte tot — max measured depth across all points. Always a
+            // positive value in the source data.
             let max_depth = cpt_max_depth(cpt);
+
+            // Datum — Dutch convention dd-mm-yyyy.
             let datum = cpt
                 .metadata
                 .date
-                .map(|d| d.format("%Y-%m-%d").to_string())
+                .map(|d| d.format("%d-%m-%Y").to_string())
                 .unwrap_or_default();
 
             vec![
                 Value::from(cpt.id.clone()),
-                x,
-                y,
-                z,
-                Value::from(round2(max_depth)),
+                x_cell,
+                y_cell,
+                z_cell,
+                fmt_depth(max_depth),
                 Value::from(datum),
             ]
         })
@@ -158,44 +181,33 @@ fn coord_table_section(cpts: &[Cpt]) -> Section {
     }
 }
 
-/// Build a per-CPT page: caption paragraph + embedded SVG chart.
-fn cpt_page_section(cpt: &Cpt) -> Section {
-    let svg = render_cpt_svg(cpt);
-    let svg_b64 = base64_encode(svg.as_bytes());
-
-    let caption = format!(
-        "Sondering {} — maximale diepte {:.2} m{}",
-        cpt.id,
-        cpt_max_depth(cpt),
-        match cpt.metadata.date {
-            Some(d) => format!(", uitgevoerd {}", d.format("%Y-%m-%d")),
-            None => String::new(),
-        }
-    );
+/// Build a per-CPT page: a single full-page rasterised chart image.
+fn cpt_page_section(cpt: &Cpt, project: &ProjectMeta) -> Section {
+    let png = render_cpt_png_with_meta(cpt, Some(&project.project_number), Some(&project.client));
+    let png_b64 = base64_encode(&png);
 
     let image = ImageBlock {
         src: ImageSource::Base64 {
-            data: svg_b64,
-            media_type: MediaType::Svg,
-            filename: Some(format!("{}.svg", cpt.id)),
+            data: png_b64,
+            media_type: MediaType::Png,
+            filename: Some(format!("{}.png", cpt.id)),
         },
-        caption: Some(caption.clone()),
-        width_mm: Some(170.0),
+        caption: None,
+        // Hint at full A4 width; the engine's content frame (~170mm) will
+        // clip it but at the largest possible width.
+        width_mm: Some(200.0),
         alignment: Alignment::Center,
     };
 
     Section {
-        title: format!("Sondering {}", cpt.id),
+        // Empty title — the SVG carries its own labels.
+        title: String::new(),
         level: 1,
-        content: vec![
-            ContentBlock::Paragraph(ParagraphBlock {
-                text: caption,
-                style: "Normal".to_string(),
-            }),
-            ContentBlock::Image(image),
-        ],
+        content: vec![ContentBlock::Image(image)],
         orientation: None,
-        page_break_before: true,
+        // No page-break — the chart needs to start on the *first* content page,
+        // not the second, so the engine doesn't waste a near-empty page.
+        page_break_before: false,
     }
 }
 
@@ -205,9 +217,17 @@ fn cpt_max_depth(cpt: &Cpt) -> f64 {
     cpt.points.iter().map(|p| p.depth).fold(0.0_f64, f64::max)
 }
 
-/// Round to 2 decimals — table presentation only.
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+/// Format an RD coordinate as a fixed two-decimal string (e.g. "132782.52").
+/// Emitting a string instead of a JSON number keeps trailing zeros (serde
+/// would render `132782.50` as `"132782.5"` otherwise).
+fn fmt_coord(v: f64) -> Value {
+    Value::from(format!("{:.2}", v))
+}
+
+/// Format a depth / elevation in metres with two decimals, preserving the
+/// sign (so `-1.06` stays `-1.06` for ground-below-NAP).
+fn fmt_depth(v: f64) -> Value {
+    Value::from(format!("{:.2}", v))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

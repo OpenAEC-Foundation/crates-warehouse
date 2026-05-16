@@ -3,5 +3,6 @@
 Cargo.lock
 .idea/
 .vscode/
+.claude/
 *.swp
 PROMPTS.md

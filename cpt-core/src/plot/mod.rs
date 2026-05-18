@@ -541,6 +541,32 @@ fn build_depth_labels(plot_x: f64, plot_y: f64, plot_h: f64, z_top: f64, z_bot: 
         z += step;
     }
 
+    // ── Intermediate sub-labels ─────────────────────────────────────
+    // Wanneer de hoofd-step >= 2 m is, plaatsen we lichtere labels op
+    // de halverwege-stops (bv. -5 / -15 / -25 bij hoofd-step 10 m).
+    // Dit matcht de zwarte 5 m grid-lijnen die `build_grid` al tekent
+    // en geeft de gebruiker een numerieke ankerpunt op die lijnen
+    // zonder de hoofd-labels visueel te overdonderen (kleinere font,
+    // grijs ipv zwart).
+    if step >= 2.0 {
+        let sub_step = step / 2.0;
+        let mut z = (z_min / sub_step).ceil() * sub_step;
+        while z <= z_max + 1e-9 {
+            // Sla over wat al door de hoofd-loop is getekend
+            // (i.e. waarden die op een hoofd-step vallen).
+            let on_main = ((z / step).round() * step - z).abs() < 1e-6;
+            if !on_main {
+                let y = z_axis_proj(z_top, z_bot, plot_y, plot_h, z);
+                s.push_str(&format!(
+                    r##"<text x="{x:.1}" y="{y:.2}" font-family="Inter" font-size="6" fill="#555" text-anchor="end" dominant-baseline="central">{lbl}</text>"##,
+                    x = plot_x - 4.0,
+                    lbl = format_nap(z),
+                ));
+            }
+            z += sub_step;
+        }
+    }
+
     s
 }
 
@@ -833,5 +859,31 @@ mod tests {
         let cpt = sample_cpt();
         let png = render_cpt_png(&cpt);
         assert!(png.starts_with(&[0x89, 0x50, 0x4E, 0x47])); // PNG magic
+    }
+
+    /// Voor een ~20 m sondering met maaiveld bij NAP -1.06 valt de
+    /// DEPTH_LADDER-step op 10 m, dus hoofd-labels op -10 / -20. We
+    /// verwachten dat de nieuwe sub-labels op de tussenliggende 5 m
+    /// stops worden geplaatst (-5 / -15) zodat die corresponderen met
+    /// de zwarte 5 m grid-lijnen die `build_grid` al tekent. De
+    /// sub-labels zijn lichter (#555) zodat de hiërarchie zichtbaar
+    /// blijft tegenover de zwarte hoofd-labels.
+    #[test]
+    fn emits_intermediate_5m_nap_labels() {
+        let cpt = sample_cpt();
+        let svg = render_cpt_svg(&cpt);
+        // Hoofd-labels (zwart) blijven bestaan.
+        assert!(svg.contains("-10.00"), "main label -10.00 missing");
+        assert!(svg.contains("-20.00"), "main label -20.00 missing");
+        // Tussenliggende sub-labels op de 5 m grid-lijnen.
+        assert!(svg.contains("-5.00"), "intermediate label -5.00 missing");
+        assert!(svg.contains("-15.00"), "intermediate label -15.00 missing");
+        // En de lichtere styling (#555) wordt daadwerkelijk gebruikt
+        // voor minstens één tekst-element — zodat de hiërarchie
+        // tussen hoofd- en sub-labels zichtbaar blijft.
+        assert!(
+            svg.contains(r##"fill="#555""##),
+            "sub-label fill colour #555 not found in output"
+        );
     }
 }

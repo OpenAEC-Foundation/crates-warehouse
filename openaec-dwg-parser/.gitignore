@@ -1,0 +1,15 @@
+# Build output
+target/
+
+# Local verification harness (baseline md5s are captured per-machine
+# from local fixture directories; not portable to other devs).
+.verify.sh
+
+# Stale per-session diagnostic dumps. The parser writes nothing to
+# disk in production — these are scratch from interactive debugging
+# sessions and can be regenerated locally.
+/dump_out.txt
+/dxf_handles.txt
+/types_trace.txt
+/unk0_handles.txt
+/unk_trace.txt

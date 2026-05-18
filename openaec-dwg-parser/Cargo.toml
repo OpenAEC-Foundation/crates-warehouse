@@ -1,0 +1,24 @@
+[package]
+name = "openaec-dwg-parser"
+description = "Clean-room DWG (AutoCAD binary drawing) parser. ODA OpenDesign-spec-only — no external DWG libraries or copied code. Supports R14, R2000, R2004, R2007, R2010, R2013, R2018."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords = ["dwg", "autocad", "cad", "parser", "oda"]
+categories = ["parser-implementations", "encoding"]
+
+[lib]
+# Crate is published as `openaec-dwg-parser` but the library symbol stays
+# `dwg_parser` so consumers can keep importing under the original module
+# path (matches the upstream open-2d-studio source).
+name = "dwg_parser"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+
+[features]
+# Enables verbose `[dwg-dbg]` traces from the parser to stderr.
+# Off by default — debug prints are silent in normal builds.
+# Build with: `cargo build --release --features dwg-debug`
+dwg-debug = []

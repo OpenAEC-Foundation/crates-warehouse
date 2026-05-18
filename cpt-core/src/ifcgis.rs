@@ -26,11 +26,13 @@ use crate::error::CptError;
 /// validates the actual shape on load.
 pub type BoreJson = serde_json::Value;
 
-// Schema-versie. Sprong naar 0.2 omdat het bestandsmodel niet
-// backwards-compatible is met de oorspronkelijke ifcgis-0.1: er zijn
-// nieuwe top-level secties (bores, tekening, crs) bijgekomen die de
-// 0.1-loader simpelweg negeerde via `#[serde(default)]`.
-const SCHEMA_VERSION: &str = "ifcgis-0.2";
+// Schema-versie. Sprong naar 0.3 omdat er nieuwe top-level secties
+// bijkomen (`gis` met layer-lijst, `deliverable` met IFC-stijl 2D
+// representatie). Oudere 0.2/0.1 bestanden blijven laden — alle
+// nieuwe velden zijn `#[serde(default, skip_serializing_if = ...)]`
+// zodat ze niet hoeven te bestaan in input én niet uitgeschreven
+// worden wanneer ze leeg/None zijn (forward + backward compat).
+const SCHEMA_VERSION: &str = "ifcgis-0.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -56,6 +58,19 @@ pub struct ProjectFile {
     /// Versie). Wordt door de Situatietekening-tab gevuld.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_block: Option<TitleBlock>,
+    /// GIS-metadata (sinds 0.3) — vervangt op termijn `crs` als
+    /// top-level. Bevat EPSG + naam + optionele map-init + alle
+    /// base/overlay lagen zodat de kaart-tab exact te reproduceren
+    /// is uit één bestand. `crs` blijft als deprecated mirror voor
+    /// 0.2-loaders; nieuwe code mag uit `gis` lezen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gis: Option<GisMetadata>,
+    /// Deliverable representatie (sinds 0.3) — de huidige stand van
+    /// de tekening als 2D IFC-stijl object-graph, los van de muteer-
+    /// bare `tekening`-state. Bedoeld voor downstream-tools die het
+    /// bestand willen lezen zonder app-state te begrijpen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliverable: Option<Deliverable>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,6 +259,148 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+// ────────────────────────────────────────────────────────────────────
+// schema 0.3 — GIS metadata + deliverable
+// ────────────────────────────────────────────────────────────────────
+
+/// GIS-metadata: alle info die de map-view nodig heeft om de kaart-
+/// tab te reproduceren. Sinds ifcgis-0.3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GisMetadata {
+    /// EPSG-code van het werk-CRS. Standaard 28992 (Amersfoort / RD
+    /// New).
+    pub epsg: u32,
+    /// Menselijk leesbare CRS-naam (b.v. "Amersfoort / RD New").
+    pub name: String,
+    /// Optionele init-positie voor de kaart-tab. Als `None` bepaalt
+    /// de frontend zelf een fit-bounds o.b.v. de CPT-/Bore-locaties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<ViewCenter>,
+    /// Alle base- en overlay-lagen. Volgorde is rendering-order
+    /// (eerste = onderaan).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<GisLayer>,
+}
+
+impl Default for GisMetadata {
+    fn default() -> Self {
+        Self {
+            epsg: 28992,
+            name: "Amersfoort / RD New".to_string(),
+            center: None,
+            layers: Vec::new(),
+        }
+    }
+}
+
+/// Eén kaartlaag (base of overlay) met genoeg metadata om hem zonder
+/// app-defaults opnieuw aan te roepen. Url/layer_name/style zijn de
+/// service-parameters; enabled/opacity is de UI-state op het moment
+/// van saven.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GisLayer {
+    /// Stabiele id (b.v. "topo", "luchtfoto-actueel", "kadaster").
+    pub id: String,
+    /// User-readable label voor in de layer-switcher.
+    pub label: String,
+    /// "base" of "overlay" — sturend voor de UI-grouping en voor de
+    /// mutex-regel dat er altijd één base actief is.
+    pub group: String,
+    /// "wmts" | "wms" | "wfs" | "tile" — bepaalt de Leaflet-loader.
+    pub kind: String,
+    /// Template-URL (voor tile/wmts met {z}/{x}/{y}) of base WMS/WFS
+    /// endpoint.
+    pub url: String,
+    /// Voor WMS: LAYERS=...; voor WFS: typeName.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_name: Option<String>,
+    /// STYLES= voor WMS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Of de laag aanstaat op het moment van saven.
+    pub enabled: bool,
+    /// Layer-opacity 0.0..1.0.
+    pub opacity: f32,
+    /// © PDOK / Kadaster / etc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_zoom: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_zoom: Option<u32>,
+}
+
+/// 2D IFC-stijl deliverable — de huidige stand van de tekening als
+/// platte object-lijst. Bewust *naast* `tekening` (editor-state)
+/// zodat downstream-tools een stabiele lees-representatie hebben
+/// zonder app-state te kennen. Voor IFC4x3 mapt dit op
+/// `IfcDrawingSheet` als top-level container.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deliverable {
+    /// IFC-class. Voor 2D drawings doorgaans "IfcDrawingSheet" of
+    /// "IfcSheet"; voor IFC4x3 kan ook "IfcAnnotation" als top-level.
+    pub ifc_class: String,
+    /// 22-char IFC-stijl GUID. Frontend genereert deze (cpt-core
+    /// heeft geen uuid-dep).
+    pub guid: String,
+    /// Doorgaans projectnaam + " — Situatietekening".
+    pub name: String,
+    /// "A2" / "A3" / etc.
+    pub paper_size: String,
+    /// "landscape" / "portrait".
+    pub orientation: String,
+    /// Print-schaal als N (b.v. 500, 1000, 2000 voor 1:N).
+    pub scale: u32,
+    /// EPSG van het werk-CRS waarin de RD-coördinaten leven.
+    pub crs_epsg: u32,
+    /// Centrum van de viewport bij het opslaan.
+    pub view_center: ViewCenter,
+    /// Alle geplaatste objecten als IFC-stijl annotations. Flat —
+    /// `ifc_class` per element zegt wat het is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<IfcAnnotation>,
+    /// Title-block velden zoals geprint op het papier (kopie van het
+    /// top-level `title_block` op het moment van saven — staat hier
+    /// óók in zodat de deliverable zelfcontained is).
+    pub title_block: TitleBlock,
+    /// Ids van GIS-layers die actief waren bij het saven. De volledige
+    /// layer-definities staan in `gis.layers`; hier alleen de
+    /// referenties zodat de deliverable weet wat er zichtbaar was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_layer_ids: Vec<String>,
+}
+
+/// Eén IFC-stijl annotation. Open-typed zodat we niet twintig
+/// varianten van de struct hoeven onderhouden — `ifc_class` zegt
+/// wat het is, `geometry` en `properties` houden de type-specifieke
+/// payload.
+///
+/// Toegestane `ifc_class` waarden (IFC4x3):
+///   * "IfcAnnotation/Sondering" — CPT marker
+///   * "IfcAnnotation/Boring" — BHR marker
+///   * "IfcAnnotation/Raster" — sonderingsraster
+///   * "IfcAnnotation/Line" — vrije lijn
+///   * "IfcAnnotation/Dimension" — maatlijn
+///   * "IfcAnnotation/CoordTag" — RD-coördinaat label
+///   * "IfcGeographicElement/Overlay" — image/svg/pdf overlay
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IfcAnnotation {
+    /// IFC4x3 class — zie module-doc voor toegestane waarden.
+    pub ifc_class: String,
+    /// 22-char IFC GUID. Frontend genereert.
+    pub guid: String,
+    /// User-readable label (b.v. CPT-id).
+    pub name: String,
+    /// Geometry in lat/lon (WGS84). JSON-array van [lat, lon]
+    /// tuples. Punt = 1 paar, lijn = 2, polygoon = ≥3.
+    pub geometry: serde_json::Value,
+    /// Type-specifieke extra's. Voor sondering: kleefmeting (bool).
+    /// Voor raster: rows, cols, spacing_x, spacing_y, rotation.
+    /// Voor overlay: src (data-URL), width_meters. Bewust open-typed.
+    #[serde(default)]
+    pub properties: serde_json::Value,
+}
+
 /// Serialise a project (metadata + CPTs + optional bores/tekening/
 /// title_block) to a pretty-printed `.ifcgis` JSON string.
 pub fn save(project: ProjectInfo, cpts: Vec<Cpt>) -> Result<String, CptError> {
@@ -268,6 +425,11 @@ pub fn save_full(
         crs: Crs::default(),
         tekening,
         title_block,
+        // 0.3-velden: dit pad is de "korte" save zonder GIS/
+        // deliverable. Frontend gebruikt save_project_ifcgis_full
+        // (serde_json::Value) wanneer ze die wél willen meegeven.
+        gis: None,
+        deliverable: None,
     };
     serde_json::to_string_pretty(&file)
         .map_err(|e| CptError::InvalidGef(format!("ifcgis serialize: {e}")))
@@ -320,14 +482,16 @@ mod tests {
     #[test]
     fn round_trip_empty_project() {
         let json = save(sample_project(), vec![]).unwrap();
-        // Schema-versie liep mee naar 0.2 toen we bores + tekening +
-        // crs + title_block toevoegden — een 0.1-loader zou de extra
-        // velden negeren, maar oude bestanden zonder 'bores' enz. zijn
-        // wel forward-compatible omdat alle nieuwe velden #[serde(default)]
-        // hebben.
+        // Schema-versie liep mee naar 0.3 toen `gis` en `deliverable`
+        // erbij kwamen. Een 0.2-loader negeert die nieuwe velden
+        // (serde tolereert unknown fields by default niet, maar het
+        // ProjectFile-struct heeft ze niet — dus dat zou wel falen).
+        // Forward-compat is geregeld doordat alle nieuwe velden in
+        // het schema `#[serde(default, skip_serializing_if = ...)]`
+        // hebben zodat oude 0.2-input nog laadt op een 0.3-loader.
         assert!(
-            json.contains("\"schema\": \"ifcgis-0.2\""),
-            "expected schema 0.2 in output, got: {json}"
+            json.contains("\"schema\": \"ifcgis-0.3\""),
+            "expected schema 0.3 in output, got: {json}"
         );
         let back = load(&json).unwrap();
         assert_eq!(back.project.title, "Test project");
@@ -349,5 +513,198 @@ mod tests {
         let bad = r#"{"header":{"schema":"openfoo-1","originating_system":"X","timestamp":"2026-01-01T00:00:00Z"},"project":{"type":"OpenGeoProject","title":"T","date":"2026-01-01"},"cpts":[]}"#;
         let err = load(bad).err().unwrap();
         assert!(format!("{err}").contains("unrecognized schema"));
+    }
+
+    // ─── schema 0.3 tests ──────────────────────────────────────────
+
+    fn sample_gis() -> GisMetadata {
+        GisMetadata {
+            epsg: 28992,
+            name: "Amersfoort / RD New".into(),
+            center: Some(ViewCenter { lat: 52.0907, lon: 5.1214, zoom: 13.0 }),
+            layers: vec![
+                GisLayer {
+                    id: "topo".into(),
+                    label: "Topografie (BRT)".into(),
+                    group: "base".into(),
+                    kind: "wmts".into(),
+                    url: "https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/{layer}/{tileMatrixSet}/{z}/{x}/{y}.png".into(),
+                    layer_name: Some("standaard".into()),
+                    style: None,
+                    enabled: true,
+                    opacity: 1.0,
+                    attribution: Some("© Kadaster / PDOK".into()),
+                    min_zoom: Some(6),
+                    max_zoom: Some(19),
+                },
+                GisLayer {
+                    id: "kadaster".into(),
+                    label: "Kadastrale percelen".into(),
+                    group: "overlay".into(),
+                    kind: "wms".into(),
+                    url: "https://service.pdok.nl/kadaster/kadastralekaart/wms/v5_0".into(),
+                    layer_name: Some("Perceel".into()),
+                    style: Some("default".into()),
+                    enabled: false,
+                    opacity: 0.6,
+                    attribution: Some("© Kadaster".into()),
+                    min_zoom: None,
+                    max_zoom: None,
+                },
+            ],
+        }
+    }
+
+    fn sample_deliverable() -> Deliverable {
+        Deliverable {
+            ifc_class: "IfcDrawingSheet".into(),
+            guid: "0123456789abcdefghijkl".into(), // 22-char placeholder GUID
+            name: "Test project — Situatietekening".into(),
+            paper_size: "A2".into(),
+            orientation: "landscape".into(),
+            scale: 500,
+            crs_epsg: 28992,
+            view_center: ViewCenter { lat: 52.0907, lon: 5.1214, zoom: 16.0 },
+            annotations: vec![
+                IfcAnnotation {
+                    ifc_class: "IfcAnnotation/Sondering".into(),
+                    guid: "abcd1234efgh5678ijkl90".into(),
+                    name: "S01".into(),
+                    geometry: serde_json::json!([[52.0907, 5.1214]]),
+                    properties: serde_json::json!({ "kleefmeting": true }),
+                },
+                IfcAnnotation {
+                    ifc_class: "IfcAnnotation/Line".into(),
+                    guid: "mnop1234qrst5678uvwx90".into(),
+                    name: "Doorsnede A-A".into(),
+                    geometry: serde_json::json!([[52.0900, 5.1200], [52.0915, 5.1230]]),
+                    properties: serde_json::json!({}),
+                },
+            ],
+            title_block: TitleBlock {
+                project: "Test project".into(),
+                project_number: "2026-001".into(),
+                drawing_number: "T-001".into(),
+                scale: "1:500".into(),
+                date: "2026-05-18".into(),
+                ..Default::default()
+            },
+            active_layer_ids: vec!["topo".into()],
+        }
+    }
+
+    #[test]
+    fn round_trip_ifcgis_0_3_full() {
+        // Bouw een 0.3-ProjectFile met alle nieuwe secties gevuld
+        // en bevestig dat ze allemaal overleven door save → load.
+        let file = ProjectFile {
+            header: Header::new("Open Geotechniek Studio"),
+            project: sample_project(),
+            cpts: vec![sample_cpt("S01")],
+            bores: Vec::new(),
+            crs: Crs::default(),
+            tekening: None,
+            title_block: Some(TitleBlock {
+                project: "Test project".into(),
+                project_number: "2026-001".into(),
+                ..Default::default()
+            }),
+            gis: Some(sample_gis()),
+            deliverable: Some(sample_deliverable()),
+        };
+        let json = serde_json::to_string_pretty(&file).unwrap();
+        assert!(json.contains("\"schema\": \"ifcgis-0.3\""));
+        assert!(json.contains("\"gis\""), "expected gis section in output");
+        assert!(json.contains("\"deliverable\""), "expected deliverable section");
+        assert!(json.contains("\"IfcDrawingSheet\""));
+        assert!(json.contains("\"topo\""));
+
+        let back = load(&json).unwrap();
+        let gis = back.gis.as_ref().expect("gis should round-trip");
+        assert_eq!(gis.epsg, 28992);
+        assert_eq!(gis.layers.len(), 2);
+        assert_eq!(gis.layers[0].id, "topo");
+        assert!(gis.layers[0].enabled);
+        assert_eq!(gis.layers[1].id, "kadaster");
+        assert!(!gis.layers[1].enabled);
+        assert_eq!(gis.layers[1].opacity, 0.6);
+        assert_eq!(gis.layers[0].layer_name.as_deref(), Some("standaard"));
+
+        let deliv = back.deliverable.as_ref().expect("deliverable should round-trip");
+        assert_eq!(deliv.ifc_class, "IfcDrawingSheet");
+        assert_eq!(deliv.scale, 500);
+        assert_eq!(deliv.annotations.len(), 2);
+        assert_eq!(deliv.annotations[0].ifc_class, "IfcAnnotation/Sondering");
+        assert_eq!(deliv.annotations[0].name, "S01");
+        assert_eq!(deliv.active_layer_ids, vec!["topo".to_string()]);
+    }
+
+    #[test]
+    fn loads_0_2_file_as_0_3() {
+        // Simuleer een echt 0.2-bestand zonder `gis` en `deliverable`
+        // velden — de 0.3-loader moet dat nog steeds accepteren en
+        // de nieuwe velden op None / default zetten.
+        let json_0_2 = r#"{
+            "header": {
+                "schema": "ifcgis-0.2",
+                "originating_system": "Open Geotechniek Studio",
+                "timestamp": "2026-05-15T10:00:00+00:00"
+            },
+            "project": {
+                "type": "OpenGeoProject",
+                "title": "Legacy 0.2 project",
+                "client": "ACME bv",
+                "location": "Utrecht",
+                "project_number": "2024-099",
+                "author": "OGS",
+                "date": "2024-12-01"
+            },
+            "cpts": [],
+            "crs": { "epsg": 28992, "name": "Amersfoort / RD New" }
+        }"#;
+        let back = load(json_0_2).expect("0.2 file must still load on 0.3 loader");
+        assert_eq!(back.header.schema, "ifcgis-0.2");
+        assert_eq!(back.project.title, "Legacy 0.2 project");
+        assert!(back.gis.is_none(), "gis defaults to None for 0.2 files");
+        assert!(back.deliverable.is_none(), "deliverable defaults to None");
+        assert!(back.bores.is_empty());
+        assert_eq!(back.crs.epsg, 28992);
+    }
+
+    #[test]
+    fn deliverable_annotation_geometry_round_trips() {
+        // Een IfcAnnotation met een lat/lon-array als geometry moet
+        // bit-by-bit terugkomen — de waarden zijn open JSON, dus
+        // we vergelijken via serde_json::Value-equality.
+        let ann = IfcAnnotation {
+            ifc_class: "IfcAnnotation/Line".into(),
+            guid: "geomtest1234567890abcd".into(),
+            name: "Profielas".into(),
+            geometry: serde_json::json!([
+                [52.37000, 4.89000],
+                [52.37050, 4.89100],
+                [52.37100, 4.89200]
+            ]),
+            properties: serde_json::json!({
+                "kind": "section",
+                "label": "A-A'"
+            }),
+        };
+        let json = serde_json::to_string(&ann).unwrap();
+        let back: IfcAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ifc_class, ann.ifc_class);
+        assert_eq!(back.guid, ann.guid);
+        assert_eq!(back.name, ann.name);
+        assert_eq!(back.geometry, ann.geometry);
+        assert_eq!(back.properties, ann.properties);
+
+        // Concreet sanity-check op de geometry-vorm: het is een array
+        // van 3 tuples, ieder met 2 floats.
+        let arr = back.geometry.as_array().expect("geometry should be array");
+        assert_eq!(arr.len(), 3);
+        let first = arr[0].as_array().expect("each entry is a tuple");
+        assert_eq!(first.len(), 2);
+        assert!((first[0].as_f64().unwrap() - 52.37000).abs() < 1e-9);
+        assert!((first[1].as_f64().unwrap() - 4.89000).abs() < 1e-9);
     }
 }

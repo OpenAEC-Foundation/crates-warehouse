@@ -1,0 +1,23 @@
+[package]
+name = "openaec-dxf-importer"
+description = "Generic DXF (Autodesk Drawing Exchange Format) importer. Tessellates entities into vertex-stream callbacks via a user-supplied DxfSink trait — so the same crate feeds a 2D viewer, an SVG writer, an IFC pipeline, etc."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords = ["dxf", "autocad", "cad", "import", "tessellation"]
+categories = ["parser-implementations", "graphics"]
+
+[lib]
+name = "openaec_dxf_importer"
+path = "src/lib.rs"
+
+[dependencies]
+# Low-level DXF group-code parser. DXF is a public Autodesk text/binary
+# interchange format; the `dxf` crate is a pure-Rust, MIT-licensed
+# reader/writer that turns the raw stream into typed entities.
+dxf = "0.5"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

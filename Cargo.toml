@@ -26,6 +26,8 @@ members = [
     "openaec-cli",
     "openaec-ffi",
     "openaec-server",
+    "openaec-dwg-parser",
+    "openaec-dxf-importer",
 ]
 
 [workspace.package]

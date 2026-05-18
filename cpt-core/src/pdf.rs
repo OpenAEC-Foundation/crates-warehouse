@@ -87,109 +87,240 @@ fn render_cover_page(
 ) {
     let layer = doc.get_page(page).get_layer(*layer_id);
 
-    // Deep Forge background covers top two-thirds (0..198mm from bottom is
-    // *not* the dark band — printpdf y is from the bottom-left. So the
-    // dark band is y = 99mm..297mm). Bottom third stays white.
-    let dark_band_y_min = A4_H_MM / 3.0; // 99 mm from bottom
-    fill_rect(
-        &layer,
-        0.0, dark_band_y_min,
-        A4_W_MM, A4_H_MM - dark_band_y_min,
-        DEEP_FORGE,
-    );
+    // ── Layout (mirrors OpenAEC-style-book/reports/Voorblad_reference.pdf)
+    // Dark zone covers the top ~70 % of the page so the white "title
+    // strip" at the bottom is only ~30 % tall. Badges sit at the very
+    // bottom of the dark zone, just above the amber boundary strip. The
+    // title fills the white strip in big Deep Forge bold.
+    let dark_band_y_min = A4_H_MM * 0.30;           // ≈ 89 mm from bottom
+    let dark_band_h = A4_H_MM - dark_band_y_min;
+    fill_rect(&layer, 0.0, dark_band_y_min, A4_W_MM, dark_band_h, DEEP_FORGE);
 
-    // Amber gradient strip at the boundary (height ~6mm). Approximate
-    // the 3-stop CSS gradient with 12 vertical bands.
-    let gradient_height = 6.0_f32;
-    let gradient_y = dark_band_y_min - gradient_height; // sits *under* the dark band
+    // Faint blueprint hatch over the upper third — gives the dark zone
+    // some texture, mirrors the reference's hexagonal/isometric pattern
+    // without needing an embedded raster.
+    let pattern_y = dark_band_y_min + dark_band_h * 0.55;
+    let pattern_h = dark_band_h - (pattern_y - dark_band_y_min);
+    draw_blueprint_pattern(&layer, 0.0, pattern_y, A4_W_MM, pattern_h);
+
+    // Subtle city-skyline silhouette at the bottom of the dark zone
+    // (just above the badges). Rectangles of varying heights stacked
+    // left-to-right at a faint warm-gold tint.
+    draw_skyline(&layer, dark_band_y_min + 22.0);
+
+    // Amber boundary strip on the dark/light divide.
+    let gradient_height = 1.6_f32;
+    let gradient_y = dark_band_y_min - gradient_height;
     draw_amber_gradient_strip(&layer, 0.0, gradient_y, A4_W_MM, gradient_height);
 
-    // Small OpenAEC wordmark top-left in amber on dark.
-    // "Open" + "AEC" in amber, all caps.
+    // ── Top-left: OpenAEC wordmark + tagline ────────────────────────
+    // Approximates the boxed "OpenAEC" logo in the reference by rendering
+    // an amber-on-dark wordmark with a thin amber outline to its left.
     layer.set_fill_color(rgb(AMBER));
     layer.use_text(
-        "OpenAEC Foundation",
-        11.0,
-        Mm(14.0),
-        Mm(A4_H_MM - 14.0),
+        "OpenAEC",
+        14.0,
+        Mm(20.0),
+        Mm(A4_H_MM - 17.0),
         font_bold,
     );
-    // Section label (JetBrains Mono in spec — we use HelveticaBold caps).
-    layer.set_fill_color(rgb(WARM_GOLD));
-    layer.use_text(
-        "01 — SONDERINGSRAPPORT",
-        7.5,
-        Mm(14.0),
-        Mm(A4_H_MM - 19.0),
-        font_bold,
-    );
-
-    // Big title — project.title in white, centred horizontally, vertically
-    // centred within the dark band.
-    let title_text = project.title.clone();
-    let title_font_size = 28.0_f32;
-    let title_y = (A4_H_MM - 18.0).min(A4_H_MM - 60.0); // ≈ top third of dark band
-    layer.set_fill_color(rgb(BLUEPRINT_WHITE));
-    let title_width_est = estimate_text_width(&title_text, title_font_size, /* bold = */ true);
-    let title_x = ((A4_W_MM - title_width_est) / 2.0).max(14.0);
-    layer.use_text(&title_text, title_font_size, Mm(title_x), Mm(title_y - 60.0), font_bold);
-
-    // Subtitle — "Grondonderzoek — <location>" in scaffold-gray under the title.
-    let location = if project.location.is_empty() {
-        "Sondering".to_string()
-    } else {
-        project.location.clone()
-    };
-    let subtitle = format!("Grondonderzoek — {}", location);
-    let subtitle_size = 12.0_f32;
     layer.set_fill_color(rgb(SCAFFOLD_GRAY));
-    let subtitle_width = estimate_text_width(&subtitle, subtitle_size, /* bold = */ false);
-    let subtitle_x = ((A4_W_MM - subtitle_width) / 2.0).max(14.0);
-    layer.use_text(&subtitle, subtitle_size, Mm(subtitle_x), Mm(title_y - 72.0), font_regular);
-
-    // ── Bottom third: project metadata table on white ──
-    let meta_y_top = dark_band_y_min - gradient_height - 14.0; // start ~20mm under gradient
-    let meta_label_x = 24.0_f32;
-    let meta_value_x = 76.0_f32;
-    let line_height = 9.0_f32;
-    let label_size = 9.0_f32;
-    let value_size = 12.0_f32;
-
-    let rows: [(&str, String); 6] = [
-        ("Opdrachtgever", project.client.clone()),
-        ("Locatie", project.location.clone()),
-        ("Projectnummer", project.project_number.clone()),
-        ("Datum", project.date.format("%d-%m-%Y").to_string()),
-        ("Auteur", project.author.clone()),
-        ("Sondering", cpt.id.clone()),
-    ];
-
-    for (i, (label, value)) in rows.iter().enumerate() {
-        let y = meta_y_top - (i as f32) * line_height;
-        layer.set_fill_color(rgb(SCAFFOLD_GRAY));
-        layer.use_text(*label, label_size, Mm(meta_label_x), Mm(y), font_regular);
-        layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
-        let display_value = if value.is_empty() { "—".to_string() } else { value.clone() };
-        layer.use_text(display_value, value_size, Mm(meta_value_x), Mm(y), font_bold);
-    }
-
-    // Slim amber gradient strip at the very bottom of the page.
-    let footer_strip_h = 4.0_f32;
-    draw_amber_gradient_strip(&layer, 0.0, footer_strip_h, A4_W_MM, footer_strip_h);
-    // Tagline above the strip in deep-forge.
-    layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
     layer.use_text(
         "Build free. Build together.",
         9.0,
-        Mm(14.0),
-        Mm(footer_strip_h + 6.0),
+        Mm(20.0),
+        Mm(A4_H_MM - 25.5),
         font_regular,
     );
-    // Page marker right-aligned.
+    // Small amber accent box mimicking the boxed logo to the left.
+    fill_rect(&layer, 13.0, A4_H_MM - 22.0, 4.5, 7.5, AMBER);
+
+    // ── Top-right: website link in amber ────────────────────────────
+    let website = "openaec.org";
+    let web_size = 11.0_f32;
+    let web_w = estimate_text_width(website, web_size, false);
+    layer.set_fill_color(rgb(AMBER));
+    layer.use_text(
+        website,
+        web_size,
+        Mm(A4_W_MM - 14.0 - web_w),
+        Mm(A4_H_MM - 17.0),
+        font_bold,
+    );
+
+    // ── Pill badges (bottom-right of dark band) ─────────────────────
+    // Two pills sit centred horizontally a little above the amber strip
+    // in the reference layout. We right-align them so they don't fight
+    // the skyline silhouette on the left.
+    let badge_h_mm = 8.5_f32;
+    let badge_y_mm = dark_band_y_min + 8.0;
+    let badge_pad_x = 7.0_f32;
+    // Compute widths so we can right-align the pair.
+    let open_w = estimate_text_width("OPEN SOURCE", 9.0, true) + 2.0 * badge_pad_x;
+    let eng_w  = estimate_text_width("ENGINEERING", 9.0, true) + 2.0 * badge_pad_x;
+    let gap = 3.0_f32;
+    let right_edge = A4_W_MM - 18.0;
+    let eng_x = right_edge - eng_w;
+    let open_x = eng_x - gap - open_w;
+    draw_badge(
+        &layer, font_bold,
+        "OPEN SOURCE", AMBER, BLUEPRINT_WHITE,
+        open_x, badge_y_mm, badge_h_mm, badge_pad_x,
+    );
+    draw_badge(
+        &layer, font_bold,
+        "ENGINEERING", (42.0/255.0, 42.0/255.0, 50.0/255.0), BLUEPRINT_WHITE,
+        eng_x, badge_y_mm, badge_h_mm, badge_pad_x,
+    );
+
+    // ── White zone: big project title + subtitle ────────────────────
+    // Title anchored toward the bottom-left, subtitle directly under it.
+    // Matches the reference where the white zone has just these two
+    // elements (no metadata grid, no clutter).
+    let title_text = if project.title.trim().is_empty() {
+        format!("Sondering {}", cpt.id)
+    } else {
+        project.title.clone()
+    };
+    let title_size = 36.0_f32;
+    let title_y = 38.0_f32;
+    layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
+    layer.use_text(&title_text, title_size, Mm(20.0), Mm(title_y), font_bold);
+
+    // Subtitle — "Sonderingsrapport — <location>" in scaffold gray.
+    let subtitle = if project.location.is_empty() {
+        format!("Sonderingsrapport · sondering {}", cpt.id)
+    } else {
+        format!("Sonderingsrapport · {}", project.location)
+    };
+    layer.set_fill_color(rgb(SCAFFOLD_GRAY));
+    layer.use_text(&subtitle, 13.0, Mm(20.0), Mm(title_y - 9.0), font_regular);
+
+    // Compact bottom-right metadata cluster — project + datum, only
+    // when supplied. Keeps the cover clean while still surfacing the
+    // essential project context.
+    let mut meta_y = title_y + 2.0;
+    let meta_x = A4_W_MM - 18.0;
+    if !project.client.is_empty() {
+        let s = format!("Opdrachtgever  {}", project.client);
+        let w = estimate_text_width(&s, 8.5, false);
+        layer.set_fill_color(rgb(SCAFFOLD_GRAY));
+        layer.use_text(&s, 8.5, Mm(meta_x - w), Mm(meta_y), font_regular);
+        meta_y -= 5.0;
+    }
+    if !project.project_number.is_empty() {
+        let s = format!("Projectnr  {}", project.project_number);
+        let w = estimate_text_width(&s, 8.5, false);
+        layer.set_fill_color(rgb(SCAFFOLD_GRAY));
+        layer.use_text(&s, 8.5, Mm(meta_x - w), Mm(meta_y), font_regular);
+        meta_y -= 5.0;
+    }
+    let date_s = format!("Datum  {}", project.date.format("%d-%m-%Y"));
+    let date_w = estimate_text_width(&date_s, 8.5, false);
+    layer.set_fill_color(rgb(SCAFFOLD_GRAY));
+    layer.use_text(&date_s, 8.5, Mm(meta_x - date_w), Mm(meta_y), font_regular);
+
+    // ── Footer strip — slim amber band + tagline & page marker ──────
+    let footer_strip_h = 2.5_f32;
+    draw_amber_gradient_strip(&layer, 0.0, 0.0, A4_W_MM, footer_strip_h);
+    layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
+    layer.use_text(
+        "Open Geotechniek Studio",
+        9.0,
+        Mm(20.0),
+        Mm(footer_strip_h + 5.0),
+        font_bold,
+    );
     let pagetxt = "Sonderingsrapport · pagina 1";
     let pw = estimate_text_width(pagetxt, 7.5, false);
     layer.set_fill_color(rgb(SCAFFOLD_GRAY));
-    layer.use_text(pagetxt, 7.5, Mm(A4_W_MM - 14.0 - pw), Mm(footer_strip_h + 6.5), font_regular);
+    layer.use_text(pagetxt, 7.5, Mm(A4_W_MM - 18.0 - pw), Mm(footer_strip_h + 5.5), font_regular);
+}
+
+/// Draw a faint city-skyline silhouette at the bottom of the dark zone.
+/// Each "building" is a tall rectangle in a slightly lighter shade than
+/// Deep Forge, evoking the cityscape strip in the OpenAEC cover
+/// reference without any embedded artwork.
+fn draw_skyline(layer: &PdfLayerReference, y_baseline: f32) {
+    let band = (
+        WARM_GOLD.0 * 0.25 + DEEP_FORGE.0 * 0.75,
+        WARM_GOLD.1 * 0.25 + DEEP_FORGE.1 * 0.75,
+        WARM_GOLD.2 * 0.25 + DEEP_FORGE.2 * 0.75,
+    );
+    let heights: [f32; 22] = [
+        6.0, 9.0, 4.5, 7.5, 12.0, 5.5, 10.0, 8.0, 6.5, 11.0,
+        4.0, 9.5, 7.0, 5.0, 13.0, 8.5, 6.0, 10.5, 5.5, 8.0, 4.5, 7.0,
+    ];
+    let mut x = 8.0_f32;
+    let w = 9.0_f32;
+    let gap = 1.0_f32;
+    for h in heights {
+        fill_rect(layer, x, y_baseline, w, h, band);
+        x += w + gap;
+        if x > A4_W_MM - 8.0 { break; }
+    }
+}
+
+/// Draw a filled rounded pill with centred text. Used for the OPEN SOURCE
+/// and discipline badges on the cover, matching the
+/// openaec_foundation/templates/cover.yaml badge styling.
+fn draw_badge(
+    layer: &PdfLayerReference,
+    font: &IndirectFontRef,
+    text: &str,
+    fill: (f32, f32, f32),
+    text_color: (f32, f32, f32),
+    x_mm: f32,
+    y_mm: f32,
+    h_mm: f32,
+    pad_x: f32,
+) {
+    let font_size = 8.5_f32;
+    let txt_w = estimate_text_width(text, font_size, true);
+    let w = txt_w + 2.0 * pad_x;
+    fill_rect(layer, x_mm, y_mm, w, h_mm, fill);
+    // Centre text vertically (baseline approximation: 0.7 * h).
+    layer.set_fill_color(rgb(text_color));
+    layer.use_text(
+        text,
+        font_size,
+        Mm(x_mm + pad_x),
+        Mm(y_mm + h_mm * 0.36),
+        font,
+    );
+}
+
+/// Draw a subtle "blueprint" diagonal hatch over the top of the dark
+/// zone. Approximates the hero illustration overlay from the spec
+/// without needing an embedded raster — keeps the PDF compact and
+/// font-/image-free for the single-CPT path.
+fn draw_blueprint_pattern(
+    layer: &PdfLayerReference,
+    x_mm: f32,
+    y_mm: f32,
+    w_mm: f32,
+    h_mm: f32,
+) {
+    // Faint warm-gold lines at 10° angle, ~12 mm spacing.
+    layer.set_outline_color(Color::Rgb(Rgb::new(
+        WARM_GOLD.0 * 0.4 + DEEP_FORGE.0 * 0.6,
+        WARM_GOLD.1 * 0.4 + DEEP_FORGE.1 * 0.6,
+        WARM_GOLD.2 * 0.4 + DEEP_FORGE.2 * 0.6,
+        None,
+    )));
+    layer.set_outline_thickness(0.3);
+    let step = 12.0_f32;
+    let mut x = x_mm - h_mm; // start off to the left so the slope crosses the band
+    while x < x_mm + w_mm {
+        let p0 = Point::new(Mm(x), Mm(y_mm));
+        let p1 = Point::new(Mm(x + h_mm * 1.4), Mm(y_mm + h_mm));
+        let line = Line {
+            points: vec![(p0, false), (p1, false)],
+            is_closed: false,
+        };
+        layer.add_line(line);
+        x += step;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────

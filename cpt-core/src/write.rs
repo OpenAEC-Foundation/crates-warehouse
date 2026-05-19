@@ -91,15 +91,26 @@ pub fn write_gef(cpt: &Cpt) -> String {
     out.push_str(&format!("#COLUMNVOID= 4, {}\n", GEF_VOID));
     out.push_str("#COLUMNSEPARATOR= ;\n");
     out.push_str("#RECORDSEPARATOR= !\n");
+    // #REPORTCODE markeert dit bestand als een CPT-rapport voor
+    // de officiële validator (GEFPlotTool 5.1). Zonder deze regel
+    // faalt de validator met "GEF-CPT-Report 110: This is not a
+    // CPT Report". Format: naam, major, minor, patch (zelfde als
+    // BRO's IMBRO-A exports).
+    out.push_str("#REPORTCODE= GEF-CPT-Report, 1, 1, 2\n");
     out.push_str("#EOH=\n");
 
-    // Data rows use exactly the declared `;` separator with no
-    // surrounding whitespace; the record terminator `!` is appended
-    // directly after the last value, then a newline. GEFPlotTool 5.1
-    // refuses to parse rows that pad values with spaces around `;`.
+    // Data rows: alle waarden ge-scheiden door de gedeclareerde `;`
+    // INCLUSIEF na de laatste waarde, daarna de record-terminator
+    // `!` en een newline. Dus: `0.000;1.500;0.020;1.000;!\n`
+    //
+    // GEFPlotTool 5.1 verwacht dat ELKE waarde gevolgd wordt door
+    // de COLUMNSEPARATOR — ook de laatste, vóór de RECORDSEPARATOR.
+    // Zonder die laatste `;` faalt het met "No valid columnseparator
+    // was found after scan 1, column N". Onze BRO sample-GEFs doen
+    // hetzelfde (`...;6.3;!\n`).
     for p in &cpt.points {
         out.push_str(&format!(
-            "{:.3};{};{};{}!\n",
+            "{:.3};{};{};{};!\n",
             p.depth,
             fmt_opt(p.qc),
             fmt_opt(p.fs),

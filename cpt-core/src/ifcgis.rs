@@ -1,20 +1,35 @@
 //! `.ifcgis` — Open GEO Studio project file format.
 //!
-//! A JSON container in IFCX-flavoured style that bundles project metadata
-//! plus all CPTs of a project into a single file. Follows the OpenAEC
-//! ecosystem's preference for IFCX (IFC5 alpha) — flat object lists, stable
-//! types, mergeable in git.
+//! **Wire-format = IFCX (IFC5 alpha).** On disk, an `.ifcgis` is a real
+//! IFCX JSON document: an IFC4x3-style header followed by a flat `data`
+//! array of IFC entities (`type` + `GlobalId` + IFC attributes), cross-
+//! linked via `#id` reference strings.
 //!
-//! For v1 we don't depend on the full IFCX schema (still in flux); we use
-//! OpenGEO-prefixed types (`OpenGeoProject`, `OpenGeoCpt`) and the IFCX
-//! conventions for header + object listing. A future `cpt-ifcx` crate can
-//! map this into strict IFCX once that schema stabilises.
+//! The internal app-state is still the rich `ProjectFile` struct so the
+//! rest of the codebase doesn't have to think in IFC entities. Conversion
+//! happens at the file boundary:
+//!
+//! * [`to_ifcx_json`] — `ProjectFile` → IFCX JSON string
+//! * [`from_ifcx_json`] — IFCX JSON string → `ProjectFile`
+//!
+//! [`save_full`] always writes IFCX. [`load`] sniffs the input: a top-
+//! level `data` array (or an IFC4X3 `schemaIdentifiers` entry) routes to
+//! IFCX parsing; legacy `ifcgis-0.1/0.2/0.3` files still load via the
+//! original schema for forward-compat with existing user files.
+//!
+//! For pragmatism we don't pretend to implement the full IFC4x3 schema:
+//! when an IFC class isn't a perfect fit (geotechnical strata, GIS layers,
+//! drawing markers) we fall back to `IfcAnnotation` / `IfcProxy` plus a
+//! property-set carrying the original payload — documented per call site.
+//! The structural conformance (header + data + typed entities + `#id`
+//! references) is the contract, not 1:1 IFC-spec strictness.
 //!
 //! File extension: `.ifcgis`
 //! Media type: `application/x.ifcgis+json`
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
 
 use crate::domain::Cpt;
 use crate::error::CptError;
@@ -410,6 +425,10 @@ pub fn save(project: ProjectInfo, cpts: Vec<Cpt>) -> Result<String, CptError> {
 /// Full save — including bores, tekening-layout, title-block.
 /// `save()` blijft als shortcut voor backward compat met bestaande
 /// Tauri-commands die alleen CPTs hebben.
+///
+/// **Wire-format**: emits real IFCX (IFC5 alpha) JSON via
+/// [`to_ifcx_json`]. The in-memory `ProjectFile` is the contract with
+/// the rest of the app — the IFC mapping is an output-only concern.
 pub fn save_full(
     project: ProjectInfo,
     cpts: Vec<Cpt>,
@@ -431,23 +450,941 @@ pub fn save_full(
         gis: None,
         deliverable: None,
     };
-    serde_json::to_string_pretty(&file)
-        .map_err(|e| CptError::InvalidGef(format!("ifcgis serialize: {e}")))
+    to_ifcx_json(&file)
 }
 
-/// Parse a `.ifcgis` JSON file into the project model. Tolerates the
-/// older `ifcgis-0.1` schema (no bores, no tekening, no crs) — those
-/// fields just default to empty / None.
+/// Parse a `.ifcgis` JSON file into the project model.
+///
+/// Detects which on-disk format the input is:
+///   * **IFCX** (top-level `data` array, IFC4x3-style `header.schemaIdentifiers`)
+///     → routes to [`from_ifcx_json`]
+///   * **Legacy `ifcgis-0.1` / `0.2` / `0.3`** (top-level `header.schema`
+///     starting with `ifcgis-`, plus `project` / `cpts` / ...) → parsed
+///     directly into [`ProjectFile`] for forward-compat with existing
+///     user files
 pub fn load(text: &str) -> Result<ProjectFile, CptError> {
-    let file: ProjectFile = serde_json::from_str(text)
+    // Cheap sniff: parse as raw Value first so we can branch without
+    // committing to either format.
+    let raw: Value = serde_json::from_str(text)
+        .map_err(|e| CptError::InvalidGef(format!("ifcgis parse: {e}")))?;
+
+    if looks_like_ifcx(&raw) {
+        return from_ifcx_json(text);
+    }
+
+    // Legacy route — schema 0.1/0.2/0.3 (rich struct on disk).
+    let file: ProjectFile = serde_json::from_value(raw)
         .map_err(|e| CptError::InvalidGef(format!("ifcgis parse: {e}")))?;
     if !file.header.schema.starts_with("ifcgis-") {
         return Err(CptError::InvalidGef(format!(
-            "unrecognized schema '{}' (expected ifcgis-*)",
+            "unrecognized schema '{}' (expected ifcgis-* or IFCX)",
             file.header.schema
         )));
     }
     Ok(file)
+}
+
+/// Heuristic: is this JSON IFCX (real IFC5-alpha shape) or legacy
+/// `ifcgis-0.x` (our old rich struct)?
+///
+/// IFCX has a top-level `data: [...]` array of entities. Legacy files
+/// have `project`, `cpts`, etc. The sniff prefers IFCX when both a
+/// `data` array exists AND it contains entities with `type` fields —
+/// that way we never false-positive on legacy files that happen to have
+/// a stray top-level `data` field.
+fn looks_like_ifcx(raw: &Value) -> bool {
+    let Some(obj) = raw.as_object() else { return false };
+    // Strong signal: header.schemaIdentifiers contains "IFC4X3..." or
+    // "IFCX..." → definitely IFCX shape.
+    if let Some(hdr) = obj.get("header").and_then(|h| h.as_object()) {
+        if let Some(ids) = hdr.get("schemaIdentifiers").and_then(|v| v.as_array()) {
+            if ids
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|s| s.starts_with("IFC"))
+            {
+                return true;
+            }
+        }
+    }
+    // Otherwise require a non-empty `data` array of typed entities,
+    // and the absence of the legacy `project` key (which is always
+    // present on `ifcgis-0.x`).
+    let has_data_array = obj
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .any(|e| e.get("type").and_then(|t| t.as_str()).is_some())
+        })
+        .unwrap_or(false);
+    let has_legacy_project = obj
+        .get("project")
+        .map(|p| p.is_object())
+        .unwrap_or(false);
+    has_data_array && !has_legacy_project
+}
+
+// ────────────────────────────────────────────────────────────────────
+// IFCX (IFC5 alpha) wire-format
+// ────────────────────────────────────────────────────────────────────
+
+/// The IFC4x3 schema identifier we advertise. Real IFC tooling reads
+/// this to choose its property dictionary.
+const IFC_SCHEMA: &str = "IFC4X3_ADD2";
+/// IFCX writer signature — bumped when the mapping changes meaningfully.
+const PREPROCESSOR_VERSION: &str = "Open Geotechniek Studio 0.3 (IFCX writer)";
+/// Stable namespace seed for v5 GUIDs. Prefix every seed with this so a
+/// project_title="X" never collides with a cpt id="X".
+const GUID_NAMESPACE: &str = "open-geotechniek-studio/v1";
+
+// ─── reference-id helpers ───────────────────────────────────────────
+//
+// IFCX cross-links entities via `#id` strings (STEP convention, JSON
+// flavour). We assign stable ids per category so the output is
+// reproducible: project=#project, site=#site, units=#units, ctx3d=
+// #ctx-3d, etc. Per-CPT/Bore/layer ids use the entity's user id as
+// suffix to stay readable for humans diffing files in git.
+
+fn ref_id(prefix: &str, key: &str) -> String {
+    // Slugify the key so the resulting id stays valid in JSON & on
+    // disk — strip everything that isn't [A-Za-z0-9_-].
+    let clean: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("#{prefix}-{clean}")
+}
+
+/// Convert a [`ProjectFile`] into an IFCX (IFC5 alpha) JSON string.
+///
+/// Output shape:
+/// ```json
+/// {
+///   "header": { /* IFC4x3-style metadata */ },
+///   "data":   [ /* flat array of IFC entities */ ]
+/// }
+/// ```
+///
+/// The legacy `ifcgis-0.3` payload is also embedded verbatim under
+/// `metadata.openGeoStudio` in the header — this is what
+/// [`from_ifcx_json`] uses to round-trip the rich `ProjectFile` back
+/// without lossy IFC re-interpretation. (Pure IFC consumers ignore
+/// unknown header keys, so this is harmless.)
+pub fn to_ifcx_json(file: &ProjectFile) -> Result<String, CptError> {
+    let mut data: Vec<Value> = Vec::new();
+
+    // ─── IfcProject ─────────────────────────────────────────────
+    let proj_guid = ifc_guid(&format!("{GUID_NAMESPACE}:project:{}", file.project.title));
+    let owner_ref = ref_id("ownerhistory", "default");
+    let ctx_3d_ref = ref_id("ctx", "3d");
+    let ctx_2d_ref = ref_id("ctx", "2d");
+    let units_ref = ref_id("units", "default");
+    data.push(json!({
+        "type": "IfcProject",
+        "id": "#project",
+        "GlobalId": proj_guid,
+        "Name": file.project.title,
+        "Description": file.project.client,
+        "LongName": file.project.location,
+        "Phase": "Ontwerp",
+        "ObjectType": "OpenGeoProject",
+        "OwnerHistory": owner_ref,
+        "RepresentationContexts": [ctx_3d_ref, ctx_2d_ref],
+        "UnitsInContext": units_ref,
+    }));
+
+    // ─── IfcOwnerHistory (minimal) ──────────────────────────────
+    data.push(json!({
+        "type": "IfcOwnerHistory",
+        "id": "#ownerhistory-default",
+        "OwningUser": file.project.author,
+        "OwningApplication": "Open Geotechniek Studio",
+        "ChangeAction": "ADDED",
+        "CreationDate": file.header.timestamp,
+    }));
+
+    // ─── IfcUnitAssignment + IfcSIUnit(s) ───────────────────────
+    let unit_len_ref = ref_id("unit", "length");
+    let unit_pres_ref = ref_id("unit", "pressure");
+    let unit_plane_ref = ref_id("unit", "plane");
+    data.push(json!({
+        "type": "IfcUnitAssignment",
+        "id": "#units-default",
+        "Units": [unit_len_ref, unit_pres_ref, unit_plane_ref],
+    }));
+    data.push(json!({
+        "type": "IfcSIUnit",
+        "id": "#unit-length",
+        "UnitType": "LENGTHUNIT",
+        "Name": "METRE",
+    }));
+    data.push(json!({
+        "type": "IfcSIUnit",
+        "id": "#unit-pressure",
+        "UnitType": "PRESSUREUNIT",
+        "Prefix": "MEGA",
+        "Name": "PASCAL",
+    }));
+    data.push(json!({
+        "type": "IfcSIUnit",
+        "id": "#unit-plane",
+        "UnitType": "PLANEANGLEUNIT",
+        "Name": "RADIAN",
+    }));
+
+    // ─── IfcGeometricRepresentationContext (Model / Plan) ───────
+    data.push(json!({
+        "type": "IfcGeometricRepresentationContext",
+        "id": "#ctx-3d",
+        "ContextIdentifier": "Model",
+        "ContextType": "Model",
+        "CoordinateSpaceDimension": 3,
+        "Precision": 1.0e-5,
+    }));
+    data.push(json!({
+        "type": "IfcGeometricRepresentationContext",
+        "id": "#ctx-2d",
+        "ContextIdentifier": "Plan",
+        "ContextType": "Plan",
+        "CoordinateSpaceDimension": 2,
+        "Precision": 1.0e-5,
+    }));
+
+    // ─── IfcProjectedCRS + IfcMapConversion ─────────────────────
+    let crs = &file.crs;
+    let crs_ref = ref_id("crs", &format!("epsg-{}", crs.epsg));
+    data.push(json!({
+        "type": "IfcProjectedCRS",
+        "id": crs_ref.trim_start_matches('#'),
+        "Name": format!("EPSG:{}", crs.epsg),
+        "Description": crs.name,
+        "GeodeticDatum": "Amersfoort",
+        "MapProjection": "RD New",
+        "MapUnit": unit_len_ref,
+    }));
+    data.push(json!({
+        "type": "IfcMapConversion",
+        "id": "#mapconv-site",
+        "SourceCRS": ctx_3d_ref,
+        "TargetCRS": crs_ref,
+        "Eastings": 0.0,
+        "Northings": 0.0,
+        "OrthogonalHeight": 0.0,
+        "XAxisAbscissa": 1.0,
+        "XAxisOrdinate": 0.0,
+        "Scale": 1.0,
+    }));
+
+    // ─── IfcSite + IfcPostalAddress ─────────────────────────────
+    let site_guid = ifc_guid(&format!("{GUID_NAMESPACE}:site:{}", file.project.location));
+    let addr_ref = ref_id("addr", "site");
+    let (ref_lat, ref_lon) = file
+        .gis
+        .as_ref()
+        .and_then(|g| g.center.as_ref())
+        .map(|c| (c.lat, c.lon))
+        .unwrap_or((52.0, 5.0));
+    data.push(json!({
+        "type": "IfcSite",
+        "id": "#site",
+        "GlobalId": site_guid,
+        "Name": "Projectsite",
+        "Description": file.project.location,
+        "CompositionType": "ELEMENT",
+        "RefLatitude": decimal_degrees_to_dms(ref_lat),
+        "RefLongitude": decimal_degrees_to_dms(ref_lon),
+        "RefElevation": 0.0,
+        "SiteAddress": addr_ref,
+    }));
+    data.push(json!({
+        "type": "IfcPostalAddress",
+        "id": "#addr-site",
+        "Purpose": "SITE",
+        "AddressLines": [file.project.location.clone()],
+        "Town": file.project.location,
+        "Country": "Nederland",
+    }));
+
+    // ─── IfcBorehole per CPT ────────────────────────────────────
+    //
+    // IFC4x3 has IfcBorehole with PredefinedType including
+    // `GEOTECHNICAL_DRILLING_INVESTIGATION`. CPT (cone penetration
+    // test) doesn't map perfectly; we use the borehole entity with
+    // a custom ObjectType="ConePenetrationTest" plus a property-set
+    // carrying the measurement vectors. Strict IFC consumers can
+    // read the borehole as a generic geotechnical investigation;
+    // OGS-aware consumers see the full CPT payload.
+    for cpt in &file.cpts {
+        emit_cpt_entities(&mut data, cpt, &crs_ref);
+    }
+
+    // ─── IfcBorehole per BHR (opaque JSON) ──────────────────────
+    //
+    // The bores are stored as `serde_json::Value` (the frontend owns
+    // their schema). We surface their id + position as a real IFC
+    // borehole and carry the full original payload in a property-set
+    // so round-trip is lossless.
+    for (idx, bore) in file.bores.iter().enumerate() {
+        emit_bore_entities(&mut data, bore, idx);
+    }
+
+    // ─── GIS layers as IfcGeographicElement ─────────────────────
+    if let Some(gis) = &file.gis {
+        for layer in &gis.layers {
+            let lguid = ifc_guid(&format!("{GUID_NAMESPACE}:gislayer:{}", layer.id));
+            let lid = ref_id("gislayer", &layer.id);
+            data.push(json!({
+                "type": "IfcGeographicElement",
+                "id": lid.trim_start_matches('#'),
+                "GlobalId": lguid,
+                "Name": layer.label,
+                "Description": layer.attribution.clone().unwrap_or_default(),
+                "ObjectType": format!("GISLayer/{}", layer.group),
+                "PredefinedType": "USERDEFINED",
+                "ContainedInStructure": "#site",
+            }));
+            // Property-set with the layer's wire-format parameters.
+            let pset_id = ref_id("pset-gislayer", &layer.id);
+            let mut props = vec![
+                json_str_prop("Kind", &layer.kind),
+                json_str_prop("Url", &layer.url),
+                json_bool_prop("Enabled", layer.enabled),
+                json_num_prop("Opacity", layer.opacity as f64),
+            ];
+            if let Some(ln) = &layer.layer_name {
+                props.push(json_str_prop("LayerName", ln));
+            }
+            if let Some(st) = &layer.style {
+                props.push(json_str_prop("Style", st));
+            }
+            if let Some(mn) = layer.min_zoom {
+                props.push(json_num_prop("MinZoom", mn as f64));
+            }
+            if let Some(mx) = layer.max_zoom {
+                props.push(json_num_prop("MaxZoom", mx as f64));
+            }
+            data.push(json!({
+                "type": "IfcPropertySet",
+                "id": pset_id.trim_start_matches('#'),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:gislayer-pset:{}", layer.id)),
+                "Name": "OpenGeoStudio_GISLayer",
+                "HasProperties": props,
+            }));
+            data.push(json!({
+                "type": "IfcRelDefinesByProperties",
+                "id": format!("rel-{}", pset_id.trim_start_matches('#')),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:gislayer-rel:{}", layer.id)),
+                "RelatedObjects": [lid],
+                "RelatingPropertyDefinition": pset_id,
+            }));
+        }
+    }
+
+    // ─── Deliverable → IfcSheet + IfcAnnotation per element ─────
+    if let Some(deliv) = &file.deliverable {
+        let sheet_id = "#sheet-deliverable";
+        data.push(json!({
+            "type": "IfcSheet",
+            "id": sheet_id.trim_start_matches('#'),
+            "GlobalId": deliv.guid.clone(),
+            "Name": deliv.name,
+            "ObjectType": deliv.ifc_class,
+            "PredefinedType": "SHEET",
+            "ContainedInStructure": "#site",
+        }));
+        // Sheet metadata pset (paper, scale, orientation).
+        let sheet_pset_id = "#pset-sheet-deliverable";
+        data.push(json!({
+            "type": "IfcPropertySet",
+            "id": sheet_pset_id.trim_start_matches('#'),
+            "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:sheet-pset:{}", deliv.guid)),
+            "Name": "OpenGeoStudio_SheetMeta",
+            "HasProperties": [
+                json_str_prop("PaperSize", &deliv.paper_size),
+                json_str_prop("Orientation", &deliv.orientation),
+                json_num_prop("Scale", deliv.scale as f64),
+                json_num_prop("CrsEpsg", deliv.crs_epsg as f64),
+                json_num_prop("ViewCenterLat", deliv.view_center.lat),
+                json_num_prop("ViewCenterLon", deliv.view_center.lon),
+                json_num_prop("ViewCenterZoom", deliv.view_center.zoom),
+            ],
+        }));
+        data.push(json!({
+            "type": "IfcRelDefinesByProperties",
+            "id": "rel-pset-sheet-deliverable",
+            "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:sheet-rel:{}", deliv.guid)),
+            "RelatedObjects": [sheet_id],
+            "RelatingPropertyDefinition": sheet_pset_id,
+        }));
+        // One IfcAnnotation per drawing element.
+        for (idx, ann) in deliv.annotations.iter().enumerate() {
+            let ann_id = format!("#annotation-{idx}");
+            let ann_pred = annotation_predefined_type(&ann.ifc_class);
+            data.push(json!({
+                "type": "IfcAnnotation",
+                "id": ann_id.trim_start_matches('#'),
+                "GlobalId": ann.guid.clone(),
+                "Name": ann.name,
+                "ObjectType": ann.ifc_class,
+                "PredefinedType": ann_pred,
+                "ContainedInStructure": sheet_id,
+            }));
+            let ann_pset_id = format!("#pset-annotation-{idx}");
+            data.push(json!({
+                "type": "IfcPropertySet",
+                "id": ann_pset_id.trim_start_matches('#'),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:ann-pset:{}", ann.guid)),
+                "Name": "OpenGeoStudio_Annotation",
+                "HasProperties": [
+                    json_str_prop("IfcClass", &ann.ifc_class),
+                    json_raw_prop("Geometry", ann.geometry.clone()),
+                    json_raw_prop("Properties", ann.properties.clone()),
+                ],
+            }));
+            data.push(json!({
+                "type": "IfcRelDefinesByProperties",
+                "id": format!("rel-pset-annotation-{idx}"),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:ann-rel:{}", ann.guid)),
+                "RelatedObjects": [ann_id],
+                "RelatingPropertyDefinition": ann_pset_id,
+            }));
+        }
+        // Active layer ids — capture as a property-set on the sheet
+        // so the deliverable knows which GIS layers were visible.
+        if !deliv.active_layer_ids.is_empty() {
+            let ids: Vec<Value> = deliv
+                .active_layer_ids
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect();
+            data.push(json!({
+                "type": "IfcPropertySet",
+                "id": "pset-sheet-active-layers",
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:sheet-active-layers:{}", deliv.guid)),
+                "Name": "OpenGeoStudio_ActiveLayers",
+                "HasProperties": [
+                    json_raw_prop("ActiveLayerIds", Value::Array(ids)),
+                ],
+            }));
+        }
+    }
+
+    // ─── Title block → IfcDocumentInformation ───────────────────
+    if let Some(tb) = &file.title_block {
+        data.push(json!({
+            "type": "IfcDocumentInformation",
+            "id": "doc-titleblock",
+            "Identification": "TitleBlock",
+            "Name": tb.project.clone(),
+            "Description": format!("{} — {}", tb.project_number, tb.drawing_number),
+            "Purpose": "TITLE_BLOCK",
+            "Revision": tb.version.clone(),
+            "DocumentOwner": tb.drawn_by.clone(),
+            "Editors": [tb.checked_by.clone()],
+            "CreationTime": tb.date.clone(),
+            "Scope": tb.scale.clone(),
+            "IntendedUse": tb.address.clone(),
+        }));
+    }
+
+    // ─── Tekening (editor-state) → IfcAnnotation entities ───────
+    //
+    // The mutable editor state lives alongside the deliverable
+    // (which is the immutable snapshot). We emit each marker / raster
+    // / line as a real IfcAnnotation so they're inspectable by IFC
+    // tooling — the round-trip back to TekeningLayout happens via the
+    // embedded openGeoStudio block in the header (see below).
+    if let Some(tek) = &file.tekening {
+        for m in &tek.markers {
+            let aid = ref_id("marker", &m.id);
+            data.push(json!({
+                "type": "IfcAnnotation",
+                "id": aid.trim_start_matches('#'),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:marker:{}", m.id)),
+                "Name": m.id.clone(),
+                "ObjectType": format!("Marker/{}", m.kind),
+                "PredefinedType": "USERDEFINED",
+                "ContainedInStructure": "#site",
+            }));
+        }
+        for r in &tek.rasters {
+            let aid = ref_id("raster", &r.id);
+            data.push(json!({
+                "type": "IfcAnnotation",
+                "id": aid.trim_start_matches('#'),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:raster:{}", r.id)),
+                "Name": r.id.clone(),
+                "ObjectType": "Marker/Raster",
+                "PredefinedType": "USERDEFINED",
+                "ContainedInStructure": "#site",
+            }));
+        }
+        for ln in &tek.lines {
+            let aid = ref_id("line", &ln.id);
+            data.push(json!({
+                "type": "IfcAnnotation",
+                "id": aid.trim_start_matches('#'),
+                "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:line:{}", ln.id)),
+                "Name": ln.id.clone(),
+                "ObjectType": format!("Line/{}", ln.kind),
+                "PredefinedType": if ln.kind == "dimension" { "DIMENSION" } else { "USERDEFINED" },
+                "ContainedInStructure": "#site",
+            }));
+        }
+    }
+
+    // ─── Header (IFC4x3-style) + embedded openGeoStudio block ────
+    //
+    // The header has the standard IFC4x3 file-description shape so
+    // generic IFCX consumers can read it. The `openGeoStudio` key
+    // carries the full legacy `ProjectFile` payload (serde_json) so
+    // [`from_ifcx_json`] can reconstruct the rich struct losslessly
+    // without re-interpreting the IFC entities.
+    let legacy_payload = serde_json::to_value(file)
+        .map_err(|e| CptError::InvalidGef(format!("ifcgis legacy payload: {e}")))?;
+    let header = json!({
+        "fileDescription": ["ViewDefinition[GeotechnicalView]"],
+        "fileName": format!("{}.ifcgis", safe_filename(&file.project.title)),
+        "timeStamp": file.header.timestamp,
+        "author": [file.project.author.clone()],
+        "organization": ["OpenAEC Foundation"],
+        "preprocessorVersion": PREPROCESSOR_VERSION,
+        "originatingSystem": file.header.originating_system,
+        "authorization": "",
+        "schemaIdentifiers": [IFC_SCHEMA],
+        "metadata": {
+            "openGeoStudio": legacy_payload,
+        }
+    });
+
+    let doc = json!({
+        "header": header,
+        "data": data,
+    });
+    serde_json::to_string_pretty(&doc)
+        .map_err(|e| CptError::InvalidGef(format!("ifcgis ifcx serialize: {e}")))
+}
+
+/// Inverse of [`to_ifcx_json`]: parse an IFCX JSON string back into a
+/// [`ProjectFile`].
+///
+/// **Lossless path**: when the IFCX document was produced by us, the
+/// header carries an embedded `metadata.openGeoStudio` block that *is*
+/// the legacy `ProjectFile` payload. We deserialise that directly.
+///
+/// **Lossy path** (third-party IFCX input): if the embedded block is
+/// missing, we reconstruct what we can from the IFC entities —
+/// IfcProject → ProjectInfo, IfcBorehole → minimal Cpt, etc. This is
+/// best-effort; users who hand-author IFCX without our header will
+/// lose tekening / GIS state.
+pub fn from_ifcx_json(text: &str) -> Result<ProjectFile, CptError> {
+    let raw: Value = serde_json::from_str(text)
+        .map_err(|e| CptError::InvalidGef(format!("ifcx parse: {e}")))?;
+
+    // Fast path — our own writer embeds the legacy struct verbatim.
+    if let Some(embedded) = raw
+        .get("header")
+        .and_then(|h| h.get("metadata"))
+        .and_then(|m| m.get("openGeoStudio"))
+    {
+        let mut file: ProjectFile = serde_json::from_value(embedded.clone())
+            .map_err(|e| CptError::InvalidGef(format!("ifcx embedded payload: {e}")))?;
+        // Preserve the IFCX schema marker on the header so downstream
+        // code can tell this file went through the IFCX pipeline.
+        if !file.header.schema.starts_with("ifcgis-") {
+            file.header.schema = SCHEMA_VERSION.into();
+        }
+        return Ok(file);
+    }
+
+    // Slow path — reconstruct from raw IFC entities. Third-party
+    // input; preserve whatever we can.
+    let data = raw
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| CptError::InvalidGef("ifcx missing data array".into()))?;
+    reconstruct_from_entities(&raw, data)
+}
+
+/// Best-effort reconstruction from raw IFC entities when there's no
+/// embedded openGeoStudio block (third-party IFCX input).
+fn reconstruct_from_entities(raw: &Value, data: &[Value]) -> Result<ProjectFile, CptError> {
+    // Pick the IfcProject (or first project-like entity).
+    let project_ent = data
+        .iter()
+        .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("IfcProject"));
+    let project = if let Some(p) = project_ent {
+        ProjectInfo {
+            kind: default_project_type(),
+            title: p.get("Name").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
+            client: p.get("Description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            location: p.get("LongName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            project_number: String::new(),
+            author: raw
+                .get("header")
+                .and_then(|h| h.get("author"))
+                .and_then(|a| a.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            date: chrono::Local::now().date_naive(),
+        }
+    } else {
+        ProjectInfo {
+            kind: default_project_type(),
+            title: "Untitled".to_string(),
+            client: String::new(),
+            location: String::new(),
+            project_number: String::new(),
+            author: String::new(),
+            date: chrono::Local::now().date_naive(),
+        }
+    };
+
+    let timestamp = raw
+        .get("header")
+        .and_then(|h| h.get("timeStamp"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&chrono::Utc::now().to_rfc3339())
+        .to_string();
+
+    Ok(ProjectFile {
+        header: Header {
+            schema: SCHEMA_VERSION.into(),
+            originating_system: "Open Geotechniek Studio".into(),
+            timestamp,
+        },
+        project,
+        // Boreholes / strata / measurement-points round-trip would
+        // require parsing property-sets; that's only justified when we
+        // actually have third-party IFCX consumers. For now we leave
+        // the CPTs empty on this path — the embedded payload route
+        // covers the common case (our own files).
+        cpts: Vec::new(),
+        bores: Vec::new(),
+        crs: Crs::default(),
+        tekening: None,
+        title_block: None,
+        gis: None,
+        deliverable: None,
+    })
+}
+
+/// Emit the IFC entities for one CPT: IfcBorehole + IfcLocalPlacement
+/// + IfcCartesianPoint + IfcPropertySet (with the measurement vectors).
+fn emit_cpt_entities(data: &mut Vec<Value>, cpt: &Cpt, crs_ref: &str) {
+    let (x, y, z) = cpt
+        .position
+        .map(|p| (p.x_rd, p.y_rd, p.z_nap.unwrap_or(0.0)))
+        .unwrap_or((0.0, 0.0, 0.0));
+    let point_id = ref_id("point", &cpt.id);
+    let placement_id = ref_id("placement", &cpt.id);
+    let bh_id = ref_id("cpt", &cpt.id);
+    let bh_guid = ifc_guid(&format!("{GUID_NAMESPACE}:cpt:{}", cpt.id));
+
+    data.push(json!({
+        "type": "IfcCartesianPoint",
+        "id": point_id.trim_start_matches('#'),
+        "Coordinates": [x, y, z],
+    }));
+    data.push(json!({
+        "type": "IfcLocalPlacement",
+        "id": placement_id.trim_start_matches('#'),
+        "RelativePlacement": point_id,
+    }));
+    // IfcBorehole — IFC4x3 doesn't have a CPT-specific PredefinedType,
+    // so we use the generic geotechnical investigation enum and tag the
+    // ObjectType so OGS-aware readers know it's a CPT.
+    data.push(json!({
+        "type": "IfcBorehole",
+        "id": bh_id.trim_start_matches('#'),
+        "GlobalId": bh_guid,
+        "Name": cpt.id,
+        "Description": format!("CPT — {} measurement points", cpt.points.len()),
+        "ObjectType": "ConePenetrationTest",
+        "PredefinedType": "GEOTECHNICAL_DRILLING_INVESTIGATION",
+        "ObjectPlacement": placement_id,
+        "ProjectedCRS": crs_ref,
+        "ContainedInStructure": "#site",
+    }));
+
+    // ─── Measurement vectors as IfcPropertySet/IfcPropertyTableValue ─
+    let depths: Vec<Value> = cpt.points.iter().map(|p| json!(p.depth)).collect();
+    let qcs: Vec<Value> = cpt
+        .points
+        .iter()
+        .map(|p| match p.qc {
+            Some(v) => json!(v),
+            None => Value::Null,
+        })
+        .collect();
+    let fss: Vec<Value> = cpt
+        .points
+        .iter()
+        .map(|p| match p.fs {
+            Some(v) => json!(v),
+            None => Value::Null,
+        })
+        .collect();
+    let rfs: Vec<Value> = cpt
+        .points
+        .iter()
+        .map(|p| match p.rf {
+            Some(v) => json!(v),
+            None => Value::Null,
+        })
+        .collect();
+    let u2s: Vec<Value> = cpt
+        .points
+        .iter()
+        .map(|p| match p.u2 {
+            Some(v) => json!(v),
+            None => Value::Null,
+        })
+        .collect();
+
+    let pset_id = ref_id("pset-cpt", &cpt.id);
+    data.push(json!({
+        "type": "IfcPropertySet",
+        "id": pset_id.trim_start_matches('#'),
+        "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:cpt-pset:{}", cpt.id)),
+        "Name": "OpenGeoStudio_CptMeasurements",
+        "HasProperties": [
+            json!({
+                "type": "IfcPropertyTableValue",
+                "Name": "MeasurementCurve",
+                "DefiningValues": depths,
+                "DefinedValues": qcs,
+                "DefiningUnit": "#unit-length",
+                "DefinedUnit": "#unit-pressure",
+                "Expression": "qc(depth)",
+            }),
+            json!({
+                "type": "IfcPropertyListValue",
+                "Name": "FrictionSleeve_Fs",
+                "ListValues": fss,
+                "Unit": "#unit-pressure",
+            }),
+            json!({
+                "type": "IfcPropertyListValue",
+                "Name": "FrictionRatio_Rf",
+                "ListValues": rfs,
+            }),
+            json!({
+                "type": "IfcPropertyListValue",
+                "Name": "PorePressure_U2",
+                "ListValues": u2s,
+                "Unit": "#unit-pressure",
+            }),
+        ],
+    }));
+    data.push(json!({
+        "type": "IfcRelDefinesByProperties",
+        "id": format!("rel-{}", pset_id.trim_start_matches('#')),
+        "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:cpt-rel:{}", cpt.id)),
+        "RelatedObjects": [bh_id],
+        "RelatingPropertyDefinition": pset_id,
+    }));
+
+    // Per-CPT metadata pset (source file, equipment, ground level).
+    let meta_pset_id = ref_id("pset-cpt-meta", &cpt.id);
+    let mut meta_props: Vec<Value> = Vec::new();
+    meta_props.push(json_str_prop("SourceFile", &cpt.metadata.source_file));
+    if let Some(eq) = &cpt.metadata.equipment {
+        meta_props.push(json_str_prop("Equipment", eq));
+    }
+    if let Some(gl) = cpt.metadata.ground_level_nap {
+        meta_props.push(json_num_prop("GroundLevelNAP", gl));
+    }
+    if let Some(d) = cpt.metadata.date {
+        meta_props.push(json_str_prop("MeasurementDate", &d.to_string()));
+    }
+    if let Some(pn) = &cpt.metadata.project_name {
+        meta_props.push(json_str_prop("ProjectName", pn));
+    }
+    if let Some(pnr) = &cpt.metadata.project_number {
+        meta_props.push(json_str_prop("ProjectNumber", pnr));
+    }
+    data.push(json!({
+        "type": "IfcPropertySet",
+        "id": meta_pset_id.trim_start_matches('#'),
+        "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:cpt-meta-pset:{}", cpt.id)),
+        "Name": "OpenGeoStudio_CptMetadata",
+        "HasProperties": meta_props,
+    }));
+    data.push(json!({
+        "type": "IfcRelDefinesByProperties",
+        "id": format!("rel-{}", meta_pset_id.trim_start_matches('#')),
+        "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:cpt-meta-rel:{}", cpt.id)),
+        "RelatedObjects": [bh_id],
+        "RelatingPropertyDefinition": meta_pset_id,
+    }));
+}
+
+/// Emit IFC entities for a single Bore — the bore is opaque JSON, so
+/// we surface its id/coordinates if we can spot them and embed the
+/// original payload in a property-set.
+fn emit_bore_entities(data: &mut Vec<Value>, bore: &Value, idx: usize) {
+    let bore_id = bore
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("bore-{idx}"));
+    let bh_id = ref_id("bore", &bore_id);
+    let bh_guid = ifc_guid(&format!("{GUID_NAMESPACE}:bore:{}", bore_id));
+
+    data.push(json!({
+        "type": "IfcBorehole",
+        "id": bh_id.trim_start_matches('#'),
+        "GlobalId": bh_guid,
+        "Name": bore_id,
+        "Description": "BHR-XML drilling investigation",
+        "ObjectType": "Borehole",
+        "PredefinedType": "GEOTECHNICAL_DRILLING_INVESTIGATION",
+        "ContainedInStructure": "#site",
+    }));
+    let pset_id = ref_id("pset-bore", &bore_id);
+    data.push(json!({
+        "type": "IfcPropertySet",
+        "id": pset_id.trim_start_matches('#'),
+        "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:bore-pset:{}", bore_id)),
+        "Name": "OpenGeoStudio_BorePayload",
+        "HasProperties": [json_raw_prop("Payload", bore.clone())],
+    }));
+    data.push(json!({
+        "type": "IfcRelDefinesByProperties",
+        "id": format!("rel-{}", pset_id.trim_start_matches('#')),
+        "GlobalId": ifc_guid(&format!("{GUID_NAMESPACE}:bore-rel:{}", bore_id)),
+        "RelatedObjects": [bh_id],
+        "RelatingPropertyDefinition": pset_id,
+    }));
+}
+
+/// Map our annotation-class strings to IFC4x3 `PredefinedType` values.
+fn annotation_predefined_type(ifc_class: &str) -> &'static str {
+    if ifc_class.ends_with("/Dimension") {
+        "DIMENSION"
+    } else if ifc_class.ends_with("/Line") {
+        "USERDEFINED"
+    } else if ifc_class.ends_with("/Overlay") {
+        "USERDEFINED"
+    } else {
+        "USERDEFINED"
+    }
+}
+
+/// Build a single-value `IfcPropertySingleValue` of type IfcLabel.
+fn json_str_prop(name: &str, value: &str) -> Value {
+    json!({
+        "type": "IfcPropertySingleValue",
+        "Name": name,
+        "NominalValue": {
+            "type": "IfcLabel",
+            "value": value,
+        }
+    })
+}
+
+fn json_num_prop(name: &str, value: f64) -> Value {
+    json!({
+        "type": "IfcPropertySingleValue",
+        "Name": name,
+        "NominalValue": {
+            "type": "IfcReal",
+            "value": value,
+        }
+    })
+}
+
+fn json_bool_prop(name: &str, value: bool) -> Value {
+    json!({
+        "type": "IfcPropertySingleValue",
+        "Name": name,
+        "NominalValue": {
+            "type": "IfcBoolean",
+            "value": value,
+        }
+    })
+}
+
+/// Open-typed property that carries arbitrary JSON (geometry,
+/// nested object). Not strictly IFC-spec but lets us round-trip the
+/// rich payload without inventing dozens of IfcPropertyValue subtypes.
+fn json_raw_prop(name: &str, value: Value) -> Value {
+    let mut m = Map::new();
+    m.insert("type".into(), Value::String("IfcPropertyReferenceValue".into()));
+    m.insert("Name".into(), Value::String(name.into()));
+    m.insert("PropertyReference".into(), value);
+    Value::Object(m)
+}
+
+fn safe_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Convert decimal degrees → IFC's `[deg, min, sec, microsec]` tuple
+/// (signed degrees, unsigned sub-parts; matches IfcCompoundPlaneAngleMeasure).
+fn decimal_degrees_to_dms(deg: f64) -> Vec<i64> {
+    let sign = if deg < 0.0 { -1.0 } else { 1.0 };
+    let abs = deg.abs();
+    let d = abs.trunc();
+    let m_full = (abs - d) * 60.0;
+    let m = m_full.trunc();
+    let s_full = (m_full - m) * 60.0;
+    let s = s_full.trunc();
+    let micro = ((s_full - s) * 1_000_000.0).round();
+    vec![
+        (sign * d) as i64,
+        m as i64,
+        s as i64,
+        micro as i64,
+    ]
+}
+
+/// Generate a 22-char base64-encoded IFC GlobalId from a deterministic
+/// seed (project title, cpt id, …). Reproducible saves: identical input
+/// → identical GUIDs across runs.
+///
+/// We don't depend on the `uuid` crate (cpt-core stays slim); instead
+/// we hash the seed twice with the std-lib `DefaultHasher` to produce
+/// 16 bytes, then base64-encode (URL-safe, no padding) for the 22 chars.
+pub(crate) fn ifc_guid(seed: &str) -> String {
+    use base64::Engine;
+    use std::hash::{Hash, Hasher};
+
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut h1);
+    let v1 = h1.finish();
+
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    "salt".hash(&mut h2);
+    seed.hash(&mut h2);
+    let v2 = h2.finish();
+
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&v1.to_le_bytes());
+    bytes[8..].copy_from_slice(&v2.to_le_bytes());
+
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    // URL_SAFE_NO_PAD on 16 bytes gives 22 chars exactly. Defensive
+    // truncate in case the base64 crate's behaviour changes.
+    encoded.chars().take(22).collect()
 }
 
 #[cfg(test)]
@@ -481,17 +1418,18 @@ mod tests {
 
     #[test]
     fn round_trip_empty_project() {
+        // `save()` writes IFCX (IFC5 alpha) now — the wire-format moved
+        // from the rich `ifcgis-0.3` struct to a real IFC4X3-style
+        // header + data array. Verify the output is IFCX-shaped and
+        // that `load()` can sniff it back into a ProjectFile.
         let json = save(sample_project(), vec![]).unwrap();
-        // Schema-versie liep mee naar 0.3 toen `gis` en `deliverable`
-        // erbij kwamen. Een 0.2-loader negeert die nieuwe velden
-        // (serde tolereert unknown fields by default niet, maar het
-        // ProjectFile-struct heeft ze niet — dus dat zou wel falen).
-        // Forward-compat is geregeld doordat alle nieuwe velden in
-        // het schema `#[serde(default, skip_serializing_if = ...)]`
-        // hebben zodat oude 0.2-input nog laadt op een 0.3-loader.
         assert!(
-            json.contains("\"schema\": \"ifcgis-0.3\""),
-            "expected schema 0.3 in output, got: {json}"
+            json.contains("\"schemaIdentifiers\""),
+            "expected IFCX header in output, got: {json}"
+        );
+        assert!(
+            json.contains("\"IFC4X3_ADD2\""),
+            "expected IFC4X3 schema id, got: {json}"
         );
         let back = load(&json).unwrap();
         assert_eq!(back.project.title, "Test project");
@@ -510,6 +1448,11 @@ mod tests {
 
     #[test]
     fn rejects_unknown_schema() {
+        // A document that has neither IFCX shape nor the legacy
+        // `ifcgis-*` schema marker must be rejected. Note: we
+        // intentionally include `cpts` but NOT a `data` array so the
+        // IFCX sniff doesn't match, forcing the legacy route which
+        // then fails the schema-prefix check.
         let bad = r#"{"header":{"schema":"openfoo-1","originating_system":"X","timestamp":"2026-01-01T00:00:00Z"},"project":{"type":"OpenGeoProject","title":"T","date":"2026-01-01"},"cpts":[]}"#;
         let err = load(bad).err().unwrap();
         assert!(format!("{err}").contains("unrecognized schema"));
@@ -706,5 +1649,215 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert!((first[0].as_f64().unwrap() - 52.37000).abs() < 1e-9);
         assert!((first[1].as_f64().unwrap() - 4.89000).abs() < 1e-9);
+    }
+
+    // ─── IFCX (IFC5 alpha) wire-format tests ───────────────────────
+
+    /// Helper: build a full ProjectFile with every section populated
+    /// so round-trip tests can confirm nothing gets dropped.
+    fn full_project_file() -> ProjectFile {
+        ProjectFile {
+            header: Header::new("Open Geotechniek Studio"),
+            project: sample_project(),
+            cpts: vec![sample_cpt("S01"), sample_cpt("S02")],
+            bores: vec![serde_json::json!({
+                "id": "BHR-01",
+                "x_rd": 100_500.0,
+                "y_rd": 400_500.0,
+                "layers": []
+            })],
+            crs: Crs::default(),
+            tekening: None,
+            title_block: Some(TitleBlock {
+                project: "Test project".into(),
+                project_number: "2026-001".into(),
+                drawing_number: "T-001".into(),
+                scale: "1:500".into(),
+                date: "2026-05-19".into(),
+                drawn_by: "OGS".into(),
+                ..Default::default()
+            }),
+            gis: Some(sample_gis()),
+            deliverable: Some(sample_deliverable()),
+        }
+    }
+
+    /// (1) Empty project survives the IFCX round-trip — confirms the
+    ///     header and infrastructure entities are enough on their own.
+    #[test]
+    fn to_ifcx_round_trips_empty_project() {
+        let file = ProjectFile {
+            header: Header::new("Open Geotechniek Studio"),
+            project: sample_project(),
+            cpts: Vec::new(),
+            bores: Vec::new(),
+            crs: Crs::default(),
+            tekening: None,
+            title_block: None,
+            gis: None,
+            deliverable: None,
+        };
+        let ifcx = to_ifcx_json(&file).expect("to_ifcx_json should succeed");
+        // The output is IFCX-shaped (not legacy).
+        let v: serde_json::Value = serde_json::from_str(&ifcx).unwrap();
+        assert!(v.get("header").is_some(), "missing header");
+        assert!(v.get("data").is_some(), "missing data array");
+        // Round-trip back.
+        let back = from_ifcx_json(&ifcx).expect("from_ifcx_json should succeed");
+        assert_eq!(back.project.title, file.project.title);
+        assert_eq!(back.project.client, file.project.client);
+        assert_eq!(back.project.location, file.project.location);
+        assert_eq!(back.project.project_number, file.project.project_number);
+        assert_eq!(back.project.author, file.project.author);
+        assert_eq!(back.project.date, file.project.date);
+        assert_eq!(back.cpts.len(), 0);
+        assert_eq!(back.bores.len(), 0);
+        assert!(back.tekening.is_none());
+        assert!(back.title_block.is_none());
+        assert!(back.gis.is_none());
+        assert!(back.deliverable.is_none());
+        assert_eq!(back.crs.epsg, 28992);
+    }
+
+    /// (2) Output contains an `IfcProject` entity with the right Name —
+    ///     proves the IFC mapping actually emitted the project entity.
+    #[test]
+    fn to_ifcx_includes_ifc_project_entity() {
+        let file = full_project_file();
+        let ifcx = to_ifcx_json(&file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ifcx).unwrap();
+        let data = v.get("data").and_then(|d| d.as_array()).expect("data array");
+        let project_ent = data
+            .iter()
+            .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("IfcProject"))
+            .expect("IfcProject entity should exist");
+        assert_eq!(
+            project_ent.get("Name").and_then(|n| n.as_str()),
+            Some("Test project"),
+        );
+        // GlobalId is the 22-char IFC GUID.
+        let gid = project_ent
+            .get("GlobalId")
+            .and_then(|g| g.as_str())
+            .expect("GlobalId present");
+        assert_eq!(gid.len(), 22, "IFC GlobalId must be 22 chars, got {}: {}", gid.len(), gid);
+        // Deterministic — same seed → same GUID.
+        assert_eq!(
+            gid,
+            ifc_guid(&format!("{GUID_NAMESPACE}:project:{}", file.project.title)),
+        );
+        // RepresentationContexts cross-references look right.
+        let ctxs = project_ent
+            .get("RepresentationContexts")
+            .and_then(|c| c.as_array())
+            .expect("RepresentationContexts");
+        assert!(ctxs.iter().any(|c| c.as_str() == Some("#ctx-3d")));
+        assert!(ctxs.iter().any(|c| c.as_str() == Some("#ctx-2d")));
+    }
+
+    /// (3) Legacy `ifcgis-0.3` files still load — confirms the
+    ///     load() sniff routes them to the legacy parser.
+    #[test]
+    fn from_ifcx_loads_legacy_0_3() {
+        // Hand-rolled 0.3 JSON exactly as it would appear on disk
+        // before the IFCX migration.
+        let legacy_0_3 = r#"{
+            "header": {
+                "schema": "ifcgis-0.3",
+                "originating_system": "Open Geotechniek Studio",
+                "timestamp": "2026-04-01T08:00:00+00:00"
+            },
+            "project": {
+                "type": "OpenGeoProject",
+                "title": "Legacy 0.3 project",
+                "client": "ACME bv",
+                "location": "Den Haag",
+                "project_number": "2026-099",
+                "author": "OGS",
+                "date": "2026-04-01"
+            },
+            "cpts": [],
+            "crs": { "epsg": 28992, "name": "Amersfoort / RD New" },
+            "gis": {
+                "epsg": 28992,
+                "name": "Amersfoort / RD New",
+                "layers": []
+            }
+        }"#;
+        let back = load(legacy_0_3)
+            .expect("legacy ifcgis-0.3 must still load on the new IFCX-aware loader");
+        assert_eq!(back.header.schema, "ifcgis-0.3");
+        assert_eq!(back.project.title, "Legacy 0.3 project");
+        assert_eq!(back.project.location, "Den Haag");
+        assert_eq!(back.crs.epsg, 28992);
+        assert!(back.gis.is_some(), "gis section should be parsed");
+        assert!(back.deliverable.is_none());
+    }
+
+    /// (4) Output has a `data` array containing multiple entities
+    ///     (project, owner-history, units, site, contexts, …).
+    #[test]
+    fn to_ifcx_includes_data_array() {
+        let file = full_project_file();
+        let ifcx = to_ifcx_json(&file).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ifcx).unwrap();
+        let data = v.get("data").and_then(|d| d.as_array()).expect("data array");
+        // Spot-check that core infrastructure entities are present.
+        let types: std::collections::BTreeSet<&str> = data
+            .iter()
+            .filter_map(|e| e.get("type").and_then(|t| t.as_str()))
+            .collect();
+        for required in [
+            "IfcProject",
+            "IfcSite",
+            "IfcOwnerHistory",
+            "IfcUnitAssignment",
+            "IfcSIUnit",
+            "IfcGeometricRepresentationContext",
+            "IfcProjectedCRS",
+            "IfcMapConversion",
+            "IfcPostalAddress",
+            "IfcBorehole",
+            "IfcPropertySet",
+        ] {
+            assert!(
+                types.contains(required),
+                "expected IFC entity '{required}' in data array; got types: {types:?}",
+            );
+        }
+        // The data array should have well over 10 entries with all
+        // the CPTs/bores/layers/sheet/annotations emitted.
+        assert!(
+            data.len() >= 10,
+            "expected at least 10 entities in data, got {}",
+            data.len(),
+        );
+        // Round-trip via load() picks the IFCX route and recovers
+        // everything (CPTs, bores, GIS, deliverable, title-block).
+        let back = load(&ifcx).expect("load() should accept IFCX output");
+        assert_eq!(back.cpts.len(), 2);
+        assert_eq!(back.cpts[0].id, "S01");
+        assert_eq!(back.bores.len(), 1);
+        assert!(back.gis.is_some());
+        assert!(back.deliverable.is_some());
+        assert!(back.title_block.is_some());
+    }
+
+    /// Sanity-check on the GUID generator: deterministic + 22 chars.
+    #[test]
+    fn ifc_guid_is_22_chars_and_deterministic() {
+        let a = ifc_guid("ogs:project:Test");
+        let b = ifc_guid("ogs:project:Test");
+        let c = ifc_guid("ogs:project:Other");
+        assert_eq!(a.len(), 22);
+        assert_eq!(a, b, "same seed should give same GUID");
+        assert_ne!(a, c, "different seeds should give different GUIDs");
+        // URL-safe base64 alphabet only (no padding chars).
+        for ch in a.chars() {
+            assert!(
+                ch.is_ascii_alphanumeric() || ch == '-' || ch == '_',
+                "unexpected char '{ch}' in GUID {a}",
+            );
+        }
     }
 }

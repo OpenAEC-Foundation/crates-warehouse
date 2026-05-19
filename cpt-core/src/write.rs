@@ -13,40 +13,72 @@ use chrono::NaiveDate;
 use crate::domain::Cpt;
 use crate::error::CptError;
 
-const GEF_VOID: f64 = -9999.0;
+// GEF column-void sentinels. Match the values BRO uses in its IMBRO-A
+// exports (sample/BRO_GeotechnischSondeeronderzoek/*.gef) so GEFPlotTool
+// 5.1 picks up the same convention. Each column has its own sentinel
+// scaled to its expected magnitude (`999.999` MPa for qc/fs, `999.9`
+// percent for rf, `999.999` m for length).
+const VOID_LENGTH: f64 = 999.999;
+const VOID_QC: f64 = 999.999;
+const VOID_FS: f64 = 9.999;
+const VOID_RF: f64 = 999.9;
 
-/// Serialize a CPT as a GEF document (Dutch CPT exchange format).
+/// Serialize a CPT as a GEF 1.1 document conforming to GEFPlotTool 5.1.
 ///
-/// Emits the standard headers (`#GEFID`, `#FILEOWNER`, `#FILEDATE`, `#PROJECTID`,
-/// `#TESTID`, `#COMPANYID`, `#XYID`, `#ZID`, `#COLUMN= 4`, four `#COLUMNINFO=`
-/// lines for length / qc / fs / rf, `#COLUMNVOID=`, `#COLUMNSEPARATOR= ;`,
-/// `#RECORDSEPARATOR= !`, `#EOH=`) followed by `;`-separated rows terminated
-/// by `!`.
+/// Mirrors the structure of BRO's IMBRO-A reference GEFs in
+/// `sample/BRO_GeotechnischSondeeronderzoek/`. Header keywords are emitted
+/// in alphabetical order (the order GEFPlotTool 5.1 expects), with `#GEFID=`
+/// as the obligatory first line and `#EOH=` as the terminator.
 ///
-/// `#FILEOWNER` and `#PROJECTID` are mandatory per GEF 1.0/1.1 spec; the
-/// validator (GEFPlotTool 5.1) rejects files without them. Missing values
-/// fall back to a sensible default (Open Geotechniek Studio / Unknown) so
-/// the output always validates.
+/// Emitted headers:
+/// - `#GEFID= 1, 1, 0`
+/// - `#COLUMN= 4` followed by four `#COLUMNINFO=` lines (length, qc, fs, rf)
+/// - `#COLUMNSEPARATOR= ;`, `#COLUMNTEXT= 1, aan`
+/// - `#COLUMNVOID=` per column (BRO-style sentinels, see consts above)
+/// - `#COMPANYID=` (when known — uitvoerder)
+/// - `#FILEDATE=` (write date), `#FILEOWNER=` (mandatory)
+/// - `#LASTSCAN= N` (data-row count — required by GEFPlotTool 5.1)
+/// - `#MEASUREMENTTEXT= 9, maaiveld, ...` when ZID present
+/// - `#MEASUREMENTVAR= 13, ..., voorgeboord tot` when first scan > 0
+/// - `#MEASUREMENTVAR= 16, ..., einddiepte`
+/// - `#MEASUREMENTVAR= 17, 0, -, stopcriterium`
+/// - `#PROJECTID=` (mandatory), `#RECORDSEPARATOR= !`
+/// - `#REPORTCODE= GEF-CPT-Report, 1, 1, 2` (marks file as CPT report)
+/// - `#STARTDATE=`, `#STARTTIME= -, -, -` (when date present)
+/// - `#TESTID=`, `#XYID=`, `#ZID=`
+/// - `#EOH=`
 ///
-/// The data section uses exactly the declared separators with no extra
-/// whitespace: `value;value;value;value!` per record. Earlier versions
-/// padded with spaces (`value ; value ; ...`), which the strict validator
-/// rejected with "No valid columnseparator was found".
+/// Data section uses exactly the declared separators with no extra
+/// whitespace: `length;qc;fs;rf;!` per record (note the trailing `;`
+/// before `!` — GEFPlotTool 5.1 requires every value to be followed by
+/// the COLUMNSEPARATOR, including the last one).
 pub fn write_gef(cpt: &Cpt) -> String {
     let m = &cpt.metadata;
     let mut out = String::new();
 
+    // 1) #GEFID is always first, regardless of alphabetical order
     out.push_str("#GEFID= 1, 1, 0\n");
-    // #FILEOWNER is a mandatory header keyword in GEF 1.x; the strict
-    // validator (GEFPlotTool 5.1) rejects files without it. We always
-    // emit it — defaulting to the Studio brand if no equipment owner
-    // was captured by the parser.
-    let file_owner = m
-        .extra
-        .get("FILEOWNER")
-        .cloned()
-        .unwrap_or_else(|| "Open Geotechniek Studio".to_string());
-    out.push_str(&format!("#FILEOWNER= {}\n", file_owner));
+
+    // 2) COLUMN block (alphabetical: COLUMN, COLUMNINFO×4, COLUMNSEPARATOR,
+    //    COLUMNTEXT, COLUMNVOID×4)
+    out.push_str("#COLUMN= 4\n");
+    out.push_str("#COLUMNINFO= 1, m, sondeertrajectlengte, 1\n");
+    out.push_str("#COLUMNINFO= 2, MPa, conusweerstand, 2\n");
+    out.push_str("#COLUMNINFO= 3, MPa, plaatselijke wrijving, 3\n");
+    out.push_str("#COLUMNINFO= 4, %, wrijvingsgetal, 4\n");
+    out.push_str("#COLUMNSEPARATOR= ;\n");
+    out.push_str("#COLUMNTEXT= 1, aan\n");
+    out.push_str(&format!("#COLUMNVOID= 1, {}\n", VOID_LENGTH));
+    out.push_str(&format!("#COLUMNVOID= 2, {}\n", VOID_QC));
+    out.push_str(&format!("#COLUMNVOID= 3, {}\n", VOID_FS));
+    out.push_str(&format!("#COLUMNVOID= 4, {}\n", VOID_RF));
+
+    // 3) COMPANYID (optional — only when equipment is known)
+    if let Some(comp) = m.equipment.as_deref() {
+        out.push_str(&format!("#COMPANYID= {}\n", comp));
+    }
+
+    // 4) FILEDATE / FILEOWNER
     if let Some(d) = m.date {
         out.push_str(&format!(
             "#FILEDATE= {}, {}, {}\n",
@@ -55,75 +87,119 @@ pub fn write_gef(cpt: &Cpt) -> String {
             d.format("%d")
         ));
     }
-    // #PROJECTID is also mandatory. Fall back through the typed field,
-    // the parser's `extra` bag, and finally a deterministic placeholder
-    // so the file still validates round-trip.
+    // #FILEOWNER is mandatory; default to the Studio brand when unknown.
+    let file_owner = m
+        .extra
+        .get("FILEOWNER")
+        .cloned()
+        .unwrap_or_else(|| "Open Geotechniek Studio".to_string());
+    out.push_str(&format!("#FILEOWNER= {}\n", file_owner));
+
+    // 5) #LASTSCAN — explicit count required by GEFPlotTool 5.1.
+    out.push_str(&format!("#LASTSCAN= {}\n", cpt.points.len()));
+
+    // 6) MEASUREMENTTEXT — only `9, maaiveld, ...` when we have a Z reference.
+    let has_z = cpt.position.and_then(|p| p.z_nap).or(m.ground_level_nap).is_some();
+    if has_z {
+        out.push_str("#MEASUREMENTTEXT= 9, maaiveld, lokaal verticaal referentiepunt\n");
+    }
+
+    // 7) MEASUREMENTVAR block. Order matches BRO samples (numeric).
+    //    13 = voorgeboord tot (only if first scan > 0)
+    //    16 = einddiepte (always — required for GEFPlotTool report layout)
+    //    17 = stopcriterium (default 0 = onbekend)
+    let first_depth = cpt.points.first().map(|p| p.depth).unwrap_or(0.0);
+    let last_depth = cpt.points.last().map(|p| p.depth).unwrap_or(first_depth);
+    if first_depth > 0.0 {
+        out.push_str(&format!(
+            "#MEASUREMENTVAR= 13, {:.3}, m, voorgeboord tot\n",
+            first_depth
+        ));
+    }
+    out.push_str(&format!(
+        "#MEASUREMENTVAR= 16, {:.3}, m, einddiepte\n",
+        last_depth
+    ));
+    out.push_str("#MEASUREMENTVAR= 17, 0, -, stopcriterium\n");
+
+    // 8) PROJECTID (mandatory — fall back through typed field, extras, default)
     let project_id = m
         .project_number
         .clone()
         .or_else(|| m.extra.get("PROJECTID").cloned())
         .unwrap_or_else(|| "Unknown".to_string());
     out.push_str(&format!("#PROJECTID= {}\n", project_id));
+
+    // 9) RECORDSEPARATOR, REPORTCODE
+    out.push_str("#RECORDSEPARATOR= !\n");
+    // #REPORTCODE marks this file as a CPT report. Without it, GEFPlotTool
+    // 5.1 fails with "GEF-CPT-Report 110: This is not a CPT Report".
+    out.push_str("#REPORTCODE= GEF-CPT-Report, 1, 1, 2\n");
+
+    // 10) STARTDATE / STARTTIME — only when we have a date.
+    if let Some(d) = m.date {
+        out.push_str(&format!(
+            "#STARTDATE= {}, {}, {}\n",
+            d.format("%Y"),
+            d.format("%m"),
+            d.format("%d")
+        ));
+        out.push_str("#STARTTIME= -, -, -\n");
+    }
+
+    // 11) TESTID
     out.push_str(&format!("#TESTID= {}\n", cpt.id));
-    if let Some(name) = m.project_name.as_deref() {
-        out.push_str(&format!("#PROJECTNAME= {}\n", name));
-    }
-    if let Some(comp) = m.equipment.as_deref() {
-        out.push_str(&format!("#COMPANYID= {}\n", comp));
-    }
+
+    // 12) XYID / ZID
     if let Some(pos) = cpt.position {
-        out.push_str(&format!("#XYID= 31000, {:.3}, {:.3}\n", pos.x_rd, pos.y_rd));
+        out.push_str(&format!("#XYID= 28992, {:.3}, {:.3}\n", pos.x_rd, pos.y_rd));
         if let Some(z) = pos.z_nap {
+            out.push_str(&format!("#ZID= 31000, {:.3}\n", z));
+        } else if let Some(z) = m.ground_level_nap {
             out.push_str(&format!("#ZID= 31000, {:.3}\n", z));
         }
     } else if let Some(z) = m.ground_level_nap {
         out.push_str(&format!("#ZID= 31000, {:.3}\n", z));
     }
 
-    // Fixed 4-column layout: length, qc, fs, rf.
-    out.push_str("#COLUMN= 4\n");
-    out.push_str("#COLUMNINFO= 1, m, Sondeerlengte, 1\n");
-    out.push_str("#COLUMNINFO= 2, MPa, Conusweerstand, 2\n");
-    out.push_str("#COLUMNINFO= 3, MPa, Plaatselijke wrijving, 3\n");
-    out.push_str("#COLUMNINFO= 4, %, Wrijvingsgetal, 4\n");
-    out.push_str(&format!("#COLUMNVOID= 2, {}\n", GEF_VOID));
-    out.push_str(&format!("#COLUMNVOID= 3, {}\n", GEF_VOID));
-    out.push_str(&format!("#COLUMNVOID= 4, {}\n", GEF_VOID));
-    out.push_str("#COLUMNSEPARATOR= ;\n");
-    out.push_str("#RECORDSEPARATOR= !\n");
-    // #REPORTCODE markeert dit bestand als een CPT-rapport voor
-    // de officiële validator (GEFPlotTool 5.1). Zonder deze regel
-    // faalt de validator met "GEF-CPT-Report 110: This is not a
-    // CPT Report". Format: naam, major, minor, patch (zelfde als
-    // BRO's IMBRO-A exports).
-    out.push_str("#REPORTCODE= GEF-CPT-Report, 1, 1, 2\n");
+    // 13) EOH
     out.push_str("#EOH=\n");
 
-    // Data rows: alle waarden ge-scheiden door de gedeclareerde `;`
-    // INCLUSIEF na de laatste waarde, daarna de record-terminator
-    // `!` en een newline. Dus: `0.000;1.500;0.020;1.000;!\n`
-    //
-    // GEFPlotTool 5.1 verwacht dat ELKE waarde gevolgd wordt door
-    // de COLUMNSEPARATOR — ook de laatste, vóór de RECORDSEPARATOR.
-    // Zonder die laatste `;` faalt het met "No valid columnseparator
-    // was found after scan 1, column N". Onze BRO sample-GEFs doen
-    // hetzelfde (`...;6.3;!\n`).
+    // Data rows: every value followed by the declared COLUMNSEPARATOR `;`
+    // — INCLUDING the last one before the RECORDSEPARATOR `!`. Without
+    // the trailing `;` GEFPlotTool 5.1 errors with "No valid
+    // columnseparator was found after scan 1, column N". BRO IMBRO-A
+    // GEFs do the same: `1.350;0.229;1.350;0;0;0.015;6.3;!`
     for p in &cpt.points {
         out.push_str(&format!(
             "{:.3};{};{};{};!\n",
             p.depth,
-            fmt_opt(p.qc),
-            fmt_opt(p.fs),
-            fmt_opt(p.rf),
+            fmt_qc(p.qc),
+            fmt_fs(p.fs),
+            fmt_rf(p.rf),
         ));
     }
     out
 }
 
-fn fmt_opt(v: Option<f64>) -> String {
+fn fmt_qc(v: Option<f64>) -> String {
     match v {
-        Some(x) => format!("{:.4}", x),
-        None => format!("{}", GEF_VOID),
+        Some(x) => format!("{:.3}", x),
+        None => format!("{}", VOID_QC),
+    }
+}
+
+fn fmt_fs(v: Option<f64>) -> String {
+    match v {
+        Some(x) => format!("{:.3}", x),
+        None => format!("{}", VOID_FS),
+    }
+}
+
+fn fmt_rf(v: Option<f64>) -> String {
+    match v {
+        Some(x) => format!("{:.1}", x),
+        None => format!("{}", VOID_RF),
     }
 }
 
@@ -379,6 +455,57 @@ mod tests {
             gef.contains("#PROJECTID="),
             "PROJECTID must be emitted with a fallback when source has none"
         );
+    }
+
+    /// The output must structurally match the BRO IMBRO-A reference GEFs in
+    /// `sample/BRO_GeotechnischSondeeronderzoek/`. GEFPlotTool 5.1 keys off
+    /// these headers (REPORTCODE, LASTSCAN, MEASUREMENTVAR= 16/einddiepte)
+    /// to render the standard CPT report. Without them validation passes but
+    /// the report layout is broken or empty.
+    #[test]
+    fn gef_matches_bro_sample_structure() {
+        let cpt = sample_cpt();
+        let gef = write_gef(&cpt);
+
+        // Marks this file as a CPT report (else GEFPlotTool 5.1 errors
+        // with "110: This is not a CPT Report").
+        assert!(
+            gef.contains("#REPORTCODE= GEF-CPT-Report"),
+            "missing #REPORTCODE= GEF-CPT-Report:\n{gef}"
+        );
+
+        // Explicit scan count must match the number of data rows.
+        let expected_lastscan = format!("#LASTSCAN= {}", cpt.points.len());
+        assert!(
+            gef.contains(&expected_lastscan),
+            "missing or wrong {expected_lastscan}:\n{gef}"
+        );
+
+        // Einddiepte (measurement variable 16) — required for report layout.
+        assert!(
+            gef.contains("#MEASUREMENTVAR= 16,"),
+            "missing #MEASUREMENTVAR= 16 (einddiepte):\n{gef}"
+        );
+
+        // Data rows must end with `;!` (trailing column-separator before the
+        // record-separator) and a newline.
+        let data_start = gef.find("#EOH=").expect("missing EOH") + "#EOH=\n".len();
+        let data_section = &gef[data_start..];
+        let row_count = data_section.lines().filter(|l| !l.trim().is_empty()).count();
+        assert_eq!(row_count, cpt.points.len(), "row count mismatch");
+        for line in data_section.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            assert!(
+                trimmed.ends_with(";!"),
+                "data row must end with `;!`: {trimmed:?}"
+            );
+            // No spaces around the column-separator.
+            assert!(
+                !trimmed.contains(" ;") && !trimmed.contains("; "),
+                "no spaces around `;`: {trimmed:?}"
+            );
+        }
     }
 
     #[test]

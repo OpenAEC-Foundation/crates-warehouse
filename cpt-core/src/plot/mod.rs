@@ -389,15 +389,36 @@ fn build_sbt_strip(
 fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     // Drie as-rijen, gestapeld top→bottom (fs ROOD, qc BLAUW, Rf ZWART
     // inverted). De Rf-as zit in een eigen rechter-band en wordt visueel
-    // hard gescheiden van de qc-as zodat het "Wrijvingsgetal (%)" label
-    // niet meer over de qc-tickcijfers (25 / 30) heen valt.
+    // hard gescheiden van fs/qc zodat het "Wrijvingsgetal (%)" label
+    // niet meer over de qc-tickcijfers of fs-labels heen valt, en het
+    // laatste fs-tickcijfer "0.20" (waarvan de rechter-helft als losse
+    // "20" rechtsboven uitstak) volledig binnen de witte mask-zone valt.
     let row_h = h / 3.0;
     let mut s = String::new();
 
-    // Build per-row tick lists. Skip the leftmost few fs labels so the
-    // "Plaatselijke wrijving (MPa)" label has room.
+    // Bereken de Rf-band positie. Moet matchen met de Rf-curve-band in
+    // `render_cpt_svg_with_meta`. Kleine gap tussen het einde van het
+    // fs/qc-deel en het begin van het Rf-blok zodat de separator-lijn
+    // lucht heeft.
+    let rf_band_w = w * 0.20;
+    let rf_band_x = x + w - rf_band_w;
+    const HEADER_GAP: f64 = 2.0;
+    let mask_x = rf_band_x - HEADER_GAP;
+    let qc_visible_w = mask_x - x;
+    // De fs-as loopt 0 → 0.20 over de volle breedte `w`. Een fs-tick met
+    // genormaliseerde positie `tv` zit op `x + tv*w`. We willen géén
+    // fs-tickcijfers die — gerekend op hun centerpunt — bij of voorbij
+    // de witte mask-zone vallen, anders zien we de rechter-helft van
+    // bv. "0.20" als losse "20" naast de Rf-as uitsteken.
+    let fs_mask_threshold = (qc_visible_w / w) - 0.005;
+
+    // Build per-row tick lists. Skip de leftmost few fs-labels zodat de
+    // "Plaatselijke wrijving (MPa)" label ruimte heeft (start bij i=2),
+    // en clip rechts op de Rf-band-grens (filter de laatste tick(s) die
+    // anders onder/achter de witte Rf-mask zouden eindigen).
     let fs_ticks: Vec<(f64, String)> = (2..=10)
         .map(|i| (i as f64 * 0.02 / 0.20, format!("{:.2}", i as f64 * 0.02)))
+        .filter(|(tv, _)| *tv <= fs_mask_threshold)
         .collect();
     // qc-tick "30" valt rechts buiten de qc-band omdat de Rf-band daar
     // de ruimte claimt. De qc-baseline + tickcijfer voor 30 worden door
@@ -409,24 +430,21 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
         .filter(|v| **v <= 25)
         .map(|v| (*v as f64 / 30.0, v.to_string()))
         .collect();
-    // Rf row is rendered in the narrow right-band (≈ 1/5 of plot width),
-    // so we only show the round-number ticks (10, 5, 0) — anything denser
-    // would overlap with the "Wrijvingsgetal (%)" label.
-    let rf_ticks: Vec<(f64, String)> = [10, 5, 0]
+    // Rf-rij: alleen de tussenliggende "5" als tickcijfer. De "10" valt
+    // op de linker-rand van het Rf-blok en zou met het rechts-uitgelijnde
+    // "Wrijvingsgetal (%)" label op exact dezelfde baseline botsen
+    // (zichtbaar als "Wo̶jvingsgetal" — bo̶ is de "10" die door de "Wr"
+    // heen rendert). De "0" valt op de rechter-rand van het Rf-blok en
+    // de SBT-kolom direct daarnaast — die schrappen we ook. De
+    // gridlijnen op qc=25 en aan de rechter-rand markeren visueel de
+    // 10%-en 0%-uiteinden van de Rf-schaal al duidelijk genoeg.
+    let rf_ticks: Vec<(f64, String)> = [5_u32]
         .iter()
         .map(|i| ((10.0 - *i as f64) / 10.0, i.to_string()))
         .collect();
 
-    // Bereken de Rf-band positie zodat we de qc-rij kunnen knippen.
-    // Moet matchen met de Rf-curve-band in `render_cpt_svg_with_meta`.
-    let rf_band_w = w * 0.20;
-    let rf_band_x = x + w - rf_band_w;
-    // Kleine gap tussen het einde van het qc-deel en het begin van het
-    // Rf-blok zodat de separator-lijn lucht heeft.
-    const HEADER_GAP: f64 = 2.0;
-    let qc_visible_w = rf_band_x - HEADER_GAP - x;
-
-    // fs-rij: volle breedte (geen overlap met Rf).
+    // fs-rij: volle breedte tot aan de mask. De ticks zijn al
+    // links-gefilterd zodat ze niet binnen het Rf-blok terechtkomen.
     s.push_str(&render_axis_row(x, y + 0.0 * row_h, w, row_h, "#D02828",
         "Plaatselijke wrijving (MPa)", false, &fs_ticks));
     // qc-rij: baseline tekenen we óók op volle breedte (zodat de qc-as
@@ -441,31 +459,84 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     // Overschrijft de qc-tick "30" en de qc-baseline binnen de Rf-band
     // zodat het Rf-label en de Rf-ticks niet meer over de qc-cijfers
     // heen vallen. Strekt zich uit over de hele header-hoogte zodat
-    // ook de fs-rij rechts schoon is. Met een dunne zwarte
+    // ook de fs-rij rechts schoon is. Iets breder dan de Rf-band zelf
+    // zodat de gecenterde tekst-glyphs van eventueel laatste fs-tick
+    // niet onder de mask uit kunnen steken. Met een dunne zwarte
     // verticale separator-lijn als harde grens.
     s.push_str(&format!(
         r##"<rect x="{rx:.2}" y="{ry:.2}" width="{rw:.2}" height="{rh:.2}" fill="#FFFFFF" />"##,
-        rx = rf_band_x - HEADER_GAP,
+        rx = mask_x,
         ry = y,
-        rw = w - qc_visible_w,
+        rw = (x + w) - mask_x,
         rh = h,
     ));
     // Verticale separator: dunne zwarte lijn precies op de scheiding
     // tussen het qc-deel en het Rf-blok.
     s.push_str(&format!(
         r##"<line x1="{sx:.2}" y1="{sy:.2}" x2="{sx:.2}" y2="{sy2:.2}" stroke="#000" stroke-width="0.5" />"##,
-        sx = rf_band_x - HEADER_GAP,
+        sx = mask_x,
         sy = y,
         sy2 = y + h,
     ));
 
-    // Rf-rij: getekend BOVENOP de witte achtergrond op rij 3 (zelfde
-    // verticale positie als voorheen) zodat de visuele lezing van de
-    // grafiek niet verandert. Het Rf-label is rechts uitgelijnd binnen
-    // de Rf-band, en valt nu netjes binnen het witte blok in plaats
-    // van over de qc-tickcijfers heen.
-    s.push_str(&render_axis_row(rf_band_x, y + 2.0 * row_h, rf_band_w, row_h, "#000000",
-        "Wrijvingsgetal (%)", true, &rf_ticks));
+    // Rf-blok: het label staat boven de baseline (gecenterd in de Rf-band
+    // op rij-2 hoogte), de "5" tick staat onder de baseline (rij-3).
+    // Hierdoor zit het label op een aparte verticale lijn dan de
+    // tickcijfers en kan er geen overlap meer optreden — los van het
+    // feit dat we ook de overlappende "10" tick hierboven geschrapt
+    // hebben.
+    s.push_str(&render_rf_block(rf_band_x, y, rf_band_w, h,
+        "Wrijvingsgetal (%)", &rf_ticks));
+
+    s
+}
+
+/// Render het Rf-blok in zijn eigen rechter-band: label gecenterd
+/// bovenin, baseline op de gebruikelijke 3e-rij hoogte, en tickcijfers
+/// eronder. Dit voorkomt elke baseline-collision met het label.
+fn render_rf_block(
+    x: f64, y_top: f64, w: f64, h: f64,
+    label: &str, ticks: &[(f64, String)],
+) -> String {
+    let mut s = String::new();
+    let color = "#000000";
+    // Baseline op dezelfde y als bij `render_axis_row` voor rij 3
+    // (laatste rij) zodat de visuele uitlijning met de fs/qc baselines
+    // niet verandert.
+    let row_h = h / 3.0;
+    let base_y = y_top + 2.0 * row_h + row_h - 1.0;
+
+    // Baseline van de Rf-as.
+    s.push_str(&format!(
+        r##"<line x1="{:.1}" y1="{:.2}" x2="{:.1}" y2="{:.2}" stroke="{}" stroke-width="0.45" />"##,
+        x, base_y, x + w, base_y, color
+    ));
+
+    // Label: gecenterd boven de baseline, op rij-2 hoogte. Hierdoor
+    // botst het niet met de tickcijfers op rij-3 of met de qc-tickrij
+    // erboven (rij-2 baseline ligt iets hoger dan het label hier).
+    let label_y = y_top + row_h * 1.5;
+    s.push_str(&format!(
+        r##"<text x="{lx:.2}" y="{ly:.2}" font-family="Arial, sans-serif" font-size="6.5" fill="{color}" font-weight="700" text-anchor="middle">{label}</text>"##,
+        lx = x + w / 2.0,
+        ly = label_y,
+    ));
+
+    // Tickcijfers: ONDER de baseline zodat ze niet met het label
+    // botsen. Korte ticks omhoog tegen de baseline.
+    let tick_text_y = base_y + 6.0;
+    for (tv, lbl) in ticks {
+        let tx = x + tv * w;
+        s.push_str(&format!(
+            r##"<text x="{tx:.2}" y="{tt:.2}" font-family="Arial, sans-serif" font-size="5.5" fill="{color}" text-anchor="middle">{lbl}</text>"##,
+            tt = tick_text_y,
+        ));
+        s.push_str(&format!(
+            r##"<line x1="{tx:.2}" y1="{ya:.2}" x2="{tx:.2}" y2="{yb:.2}" stroke="{color}" stroke-width="0.45" />"##,
+            ya = base_y,
+            yb = base_y + 2.5,
+        ));
+    }
 
     s
 }
@@ -859,6 +930,46 @@ mod tests {
         let cpt = sample_cpt();
         let png = render_cpt_png(&cpt);
         assert!(png.starts_with(&[0x89, 0x50, 0x4E, 0x47])); // PNG magic
+    }
+
+    /// De header mag geen losse qc-"30" tickcijfer als <text> bevatten:
+    /// die zou rechts in/achter het Rf-blok terechtkomen, en is in een
+    /// eerdere render-bug zichtbaar geweest als overlap. Tegelijkertijd
+    /// mag de laatste fs-tick (0.20) niet meer als <text> in de SVG
+    /// staan — de rechter-helft van die tekst stak in een eerdere
+    /// render uit als losse "20" in de rechter-bovenhoek. We checken
+    /// daarom dat noch ">30<" noch ">0.20<" als text-content voorkomt.
+    /// De "10" Rf-tick mag óók niet meer als tickcijfer staan, omdat
+    /// die op dezelfde baseline als het "Wrijvingsgetal (%)" label
+    /// viel en daarmee "Wo̶jvingsgetal"-overlap veroorzaakte.
+    #[test]
+    fn header_omits_overlapping_axis_labels() {
+        let cpt = sample_cpt();
+        let svg = render_cpt_svg(&cpt);
+        // De `>30<` text-glyph moet weg zijn (de qc-as gridlijn op 30
+        // mag wel blijven — die test we niet, alleen het label).
+        assert!(
+            !svg.contains(">30<"),
+            "qc tick label '30' should not be emitted as standalone text"
+        );
+        // Het laatste fs-label "0.20" moet ook weg zijn.
+        assert!(
+            !svg.contains(">0.20<"),
+            "fs tick label '0.20' should not be emitted as standalone text"
+        );
+        // De "10" Rf-tick moet weg zijn (overlapte met het label).
+        // We controleren dit indirect: het Rf-label staat in de SVG
+        // én er mag geen `>10<` text-glyph zijn (omdat de qc-as ook
+        // geen "10" als standalone glyph rendert nu — die wordt wel
+        // als ">10<" gerendered door qc, dus we kunnen niet zomaar
+        // op afwezigheid testen). In plaats daarvan: tel hoe vaak
+        // ">10<" voorkomt — dat zou exact 1x moeten zijn (de qc-rij)
+        // ipv 2x (qc-rij + Rf-rij).
+        let count_10 = svg.matches(">10<").count();
+        assert_eq!(
+            count_10, 1,
+            "exactly one '10' tick label expected (qc only), found {count_10}"
+        );
     }
 
     /// Voor een ~20 m sondering met maaiveld bij NAP -1.06 valt de

@@ -21,15 +21,25 @@ const H: f64 = 841.0;
 /// `build_header` (labels) so the labels sit *on* the gridlines.
 const QC_TICKS: &[u32] = &[1, 5, 10, 15, 20, 25, 30];
 
-/// Hard cap for the fs (Plaatselijke wrijving) axis, MPa. The Dutch
-/// reference plot prints fs on a narrow scale; values above this cap
-/// are clamped to the cap before drawing so the polyline never leaves
-/// the chart area, and an annotation notes the true peak underneath.
-const FS_MAX: f64 = 0.02;
+/// Hard cap for the fs (Plaatselijke wrijving) axis, MPa. De Dutch
+/// reference plot prints fs op een smalle schaal; values above this
+/// cap are clamped to the cap before drawing zodat de polyline nooit
+/// de chart area verlaat, en een annotation notes the true peak
+/// underneath. Cap verhoogd van 0.02 → 0.05 op gebruiker-verzoek:
+/// 0.02 hakte teveel weg in zandige lagen waar fs vaak 0.03-0.04 zit.
+const FS_MAX: f64 = 0.05;
 
 /// Hard cap for the Rf (Wrijvingsgetal) axis, %. Same rationale as
 /// `FS_MAX` — anything above is clamped + reported in the annotation.
 const RF_MAX: f64 = 10.0;
+
+/// Hard cap for the u2 (Waterspanning) axis, MPa. CPT-met-porendruk-
+/// metingen liggen typisch 0..1 MPa onder NAP; we kappen op 1.0 MPa
+/// zodat de u2-lijn niet de plot uit schiet bij artesische pieken.
+/// u2 wordt op de qc-as-positie (zelfde x-range) geplot maar met
+/// eigen schaal (0..1 MPa) zodat hij vrij door de qc-curve heen
+/// loopt — gebruiker-verzoek.
+const U2_MAX: f64 = 1.0;
 
 // Outer printable area (page border).
 const BORDER_M: f64 = 24.0;
@@ -93,6 +103,9 @@ pub fn render_cpt_svg_with_meta(
     let qc_axis = LinearAxis { min: 0.0,    max: 30.0,   px_start: plot_x,     px_end: sbt_x - SBT_GAP };
     let fs_axis = LinearAxis { min: 0.0,    max: FS_MAX, px_start: plot_x,     px_end: sbt_x - SBT_GAP };
     let rf_axis = LinearAxis { min: RF_MAX, max: 0.0,    px_start: rf_band_x0, px_end: rf_band_x0 + rf_band_w };
+    // u2-axis: zelfde x-range als qc, eigen schaal (0..U2_MAX MPa) zodat
+    // de waterspanning-curve los van de qc-schaal leesbaar wordt.
+    let u2_axis = LinearAxis { min: 0.0,    max: U2_MAX, px_start: plot_x,     px_end: sbt_x - SBT_GAP };
 
     // ── Build curves as polylines (against NAP depth) ────────────────────
     // qc has no cap (data above 30 MPa is exceptional; SVG plotClip handles it).
@@ -103,6 +116,11 @@ pub fn render_cpt_svg_with_meta(
     let qc_points = curve_points(cpt, &qc_axis, &z_axis, |p| p.qc, z0);
     let fs_points = curve_points_clamped(cpt, &fs_axis, &z_axis, |p| p.fs, z0, 0.0, FS_MAX);
     let rf_points = curve_points_clamped(cpt, &rf_axis, &z_axis, |p| p.rf, z0, 0.0, RF_MAX);
+    // u2-points: clamp [0..U2_MAX] zoals fs/Rf. Sommige CPTs hebben
+    // alleen NaN/None voor u2; dat geeft een lege polyline → niet
+    // weergegeven (de waterspanning-rij in de header is dan visueel
+    // niet zinvol maar doet ook geen kwaad).
+    let u2_points = curve_points_clamped(cpt, &u2_axis, &z_axis, |p| p.u2, z0, 0.0, U2_MAX);
 
     // Annotation under the plot area when any measured fs / Rf exceeds the cap.
     let overflow_note = build_overflow_note(cpt, plot_x, plot_y, plot_h);
@@ -220,6 +238,7 @@ pub fn render_cpt_svg_with_meta(
 <g clip-path="url(#plotClip)">
 <polyline points="{fs_points}" fill="none" stroke="#D02828" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" />
 <polyline points="{qc_points}" fill="none" stroke="#1F4FA8" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" />
+<polyline points="{u2_points}" fill="none" stroke="#06B6D4" stroke-width="0.5"  stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="2 1.5" />
 <polyline points="{rf_points}" fill="none" stroke="#000000" stroke-width="0.4"  stroke-linejoin="round" stroke-linecap="round" />
 </g>
 {overflow_note}
@@ -527,11 +546,13 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     let scale = qc_visible_w / w;            // tick-positie-schaal
     let fs_mask_threshold = scale - 0.005;
 
-    // fs ticks: 0.005 / 0.010 / 0.015 / 0.020 (= 4 evenredig verdeeld).
-    let fs_tick_values: [f64; 4] = [0.005, 0.010, 0.015, 0.020];
+    // fs ticks: vier evenredig verdeeld over 0..FS_MAX (= 0.05).
+    // 0.01 / 0.02 / 0.03 / 0.04 — twee-decimalen format omdat de
+    // mPa-waardes nu groter zijn dan toen de cap nog 0.02 was.
+    let fs_tick_values: [f64; 4] = [0.01, 0.02, 0.03, 0.04];
     let fs_ticks: Vec<(f64, String)> = fs_tick_values
         .iter()
-        .map(|v| ((v / FS_MAX) * scale, format!("{:.3}", v)))
+        .map(|v| ((v / FS_MAX) * scale, format!("{:.2}", v)))
         .filter(|(tv, _)| *tv <= fs_mask_threshold)
         .collect();
     // qc ticks gecorrigeerd zodat ze EXACT op de verticale grid-lijnen

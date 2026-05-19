@@ -113,6 +113,23 @@ pub fn render_cpt_svg_with_meta(
     // ── Header (3 stacked x-axes) ────────────────────────────────────────
     let header = build_header(plot_x, BORDER_M, plot_w, HEADER_H);
 
+    // ── Full-height verticale scheidslijn tussen Qc/Fs-band en Rf-band.
+    //    Loopt van de top van de header tot de onderkant van de plot.
+    //    Positie = mask_x (= rf_band_x0 - HEADER_GAP) — wordt hier her-
+    //    berekend met dezelfde constanten als in build_header zodat het
+    //    exact op de Rf-band-rand uitkomt.
+    let separator_x = {
+        const HEADER_GAP: f64 = 2.0;
+        // rf_band_x0 = sbt_x - SBT_GAP - rf_band_w (zie hierboven).
+        rf_band_x0 - HEADER_GAP
+    };
+    let separator = format!(
+        r##"<line x1="{x:.2}" y1="{y1:.2}" x2="{x:.2}" y2="{y2:.2}" stroke="#000" stroke-width="0.55" />"##,
+        x = separator_x,
+        y1 = BORDER_M,
+        y2 = plot_y + plot_h,
+    );
+
     // ── Depth axis labels (NAP) ──────────────────────────────────────────
     let depth_labels = build_depth_labels(plot_x, plot_y, plot_h, z_top, z_bot, &z_axis);
 
@@ -195,6 +212,7 @@ pub fn render_cpt_svg_with_meta(
 <rect x="{bx:.1}" y="{by:.1}" width="{bw:.1}" height="{bh:.1}" fill="none" stroke="#000" stroke-width="1.5" />
 {header}
 {grid}
+{separator}
 {sbt}
 {depth_labels}
 {hatch}
@@ -484,83 +502,65 @@ fn build_sbt_strip(
 fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     // Drie as-rijen, gestapeld top→bottom (fs ROOD, qc BLAUW, Rf ZWART
     // inverted). De Rf-as zit in een eigen rechter-band en wordt visueel
-    // hard gescheiden van fs/qc zodat het "Wrijvingsgetal (%)" label
-    // niet meer over de qc-tickcijfers of fs-labels heen valt, en het
-    // laatste fs-tickcijfer (nu "0.020", voorheen "0.20" toen de cap
-    // nog 0.20 MPa was) volledig binnen de witte mask-zone valt.
+    // hard gescheiden van fs/qc.
     let row_h = h / 3.0;
     let mut s = String::new();
 
-    // Bereken de Rf-band positie. Moet matchen met de Rf-curve-band in
-    // `render_cpt_svg_with_meta`. Kleine gap tussen het einde van het
-    // fs/qc-deel en het begin van het Rf-blok zodat de separator-lijn
-    // lucht heeft.
-    let rf_band_w = w * 0.20;
-    let rf_band_x = x + w - rf_band_w;
+    // ── Layout-constanten — MOETEN matchen met main render. ─────────
+    // De qc/fs-as loopt van `x` tot `mask_x` (= sbt_x - SBT_GAP, dus
+    // de echte qc_axis-eind-positie). De Rf-band zit links van de SBT-
+    // strip; het label-blok zit binnen de Rf-band.
+    const SBT_W: f64 = 10.0;
+    const SBT_GAP: f64 = 2.0;
     const HEADER_GAP: f64 = 2.0;
+    let sbt_x = x + w - SBT_W;
+    let qc_axis_end = sbt_x - SBT_GAP;       // einde van de echte qc/fs-as
+    let rf_band_w = w * 0.20;
+    let rf_band_x = qc_axis_end - rf_band_w; // = main's rf_band_x0
     let mask_x = rf_band_x - HEADER_GAP;
-    let qc_visible_w = mask_x - x;
-    // De fs-as loopt 0 → FS_MAX (0.02 MPa) over de volle breedte `w`.
-    // Een fs-tick met genormaliseerde positie `tv` zit op `x + tv*w`.
-    // We willen géén fs-tickcijfers die — gerekend op hun centerpunt —
-    // bij of voorbij de witte mask-zone vallen, anders zou bv. "0.020"
-    // als losse "020" naast de Rf-as uitsteken.
-    let fs_mask_threshold = (qc_visible_w / w) - 0.005;
+    let qc_visible_w = qc_axis_end - x;      // = qc_axis breedte in main
 
-    // Build per-row tick lists. fs schaal is 0..FS_MAX (0.02 MPa); we
-    // tonen 0.005 / 0.010 / 0.015 / 0.020 als tickwaardes — vier evenredig
-    // verdeelde punten op de schaal. We slaan de leftmost waarde "0"
-    // over zodat de "Plaatselijke wrijving (MPa)" label ruimte heeft,
-    // en clippen rechts op de Rf-band-grens.
+    // De fs-as loopt 0 → FS_MAX (0.02 MPa) over de qc_visible_w.
+    // Een fs-tick met norm. positie `tv` (= v/FS_MAX) zit op
+    // `x + tv * qc_visible_w`. Daarna schalen we mee in render_axis_row
+    // door tv te delen door (w/qc_visible_w) zodat label-x = x + tv_eff*w.
+    let scale = qc_visible_w / w;            // tick-positie-schaal
+    let fs_mask_threshold = scale - 0.005;
+
+    // fs ticks: 0.005 / 0.010 / 0.015 / 0.020 (= 4 evenredig verdeeld).
     let fs_tick_values: [f64; 4] = [0.005, 0.010, 0.015, 0.020];
     let fs_ticks: Vec<(f64, String)> = fs_tick_values
         .iter()
-        .map(|v| (v / FS_MAX, format!("{:.3}", v)))
+        .map(|v| ((v / FS_MAX) * scale, format!("{:.3}", v)))
         .filter(|(tv, _)| *tv <= fs_mask_threshold)
         .collect();
-    // qc-tick "30" valt rechts buiten de qc-band omdat de Rf-band daar
-    // de ruimte claimt. De qc-baseline + tickcijfer voor 30 worden door
-    // de witte Rf-achtergrond afgekapt, dus we tekenen de "30" niet meer
-    // mee — dat voorkomt dubbele cijfers en maakt het Rf-blok schoon.
-    // De "25" valt nog binnen het zichtbare qc-deel.
+    // qc ticks gecorrigeerd zodat ze EXACT op de verticale grid-lijnen
+    // landen (grid wordt op qc_axis.project(v) getekend, label hier op
+    // x + tv_eff * w → samen pos = x + (v/30)*qc_visible_w).
     let qc_ticks: Vec<(f64, String)> = QC_TICKS
         .iter()
         .filter(|v| **v <= 25)
-        .map(|v| (*v as f64 / 30.0, v.to_string()))
+        .map(|v| ((*v as f64 / 30.0) * scale, v.to_string()))
         .collect();
-    // Rf-rij: alleen de tussenliggende "5" als tickcijfer. De "10" valt
-    // op de linker-rand van het Rf-blok en zou met het rechts-uitgelijnde
-    // "Wrijvingsgetal (%)" label op exact dezelfde baseline botsen
-    // (zichtbaar als "Wo̶jvingsgetal" — bo̶ is de "10" die door de "Wr"
-    // heen rendert). De "0" valt op de rechter-rand van het Rf-blok en
-    // de SBT-kolom direct daarnaast — die schrappen we ook. De
-    // gridlijnen op qc=25 en aan de rechter-rand markeren visueel de
-    // 10%-en 0%-uiteinden van de Rf-schaal al duidelijk genoeg.
-    let rf_ticks: Vec<(f64, String)> = [5_u32]
+    // Rf-as is inverted: tv=0 → rechter-rand = Rf=0%, tv=1 → linker-rand = Rf=10%.
+    // Toont nu zowel 5 als 10 — de "10" zat eerder op de baseline van
+    // het Wrijvingsgetal-label, maar render_rf_block heeft label/tick
+    // op verschillende y nu (label op rij-2 y, tick op rij-3 y), dus
+    // geen botsing meer.
+    let rf_ticks: Vec<(f64, String)> = [5_u32, 10_u32]
         .iter()
         .map(|i| ((10.0 - *i as f64) / 10.0, i.to_string()))
         .collect();
 
-    // fs-rij: volle breedte tot aan de mask. De ticks zijn al
-    // links-gefilterd zodat ze niet binnen het Rf-blok terechtkomen.
+    // fs-rij: baseline volle breedte, tick-labels gefilterd binnen mask.
     s.push_str(&render_axis_row(x, y + 0.0 * row_h, w, row_h, "#D02828",
         "Plaatselijke wrijving (MPa)", false, &fs_ticks));
-    // qc-rij: baseline tekenen we óók op volle breedte (zodat de qc-as
-    // visueel doorloopt onder de Rf-band), maar de tickcijfers stoppen
-    // bij "25". De qc-band zelf in de plot blijft op volle breedte zoals
-    // gedefinieerd door `qc_axis` — het label "30" valt onder de witte
-    // Rf-achtergrond.
+    // qc-rij: baseline volle breedte, tick-labels eindigen bij "25".
     s.push_str(&render_axis_row(x, y + 1.0 * row_h, w, row_h, "#1F4FA8",
         "Conusweerstand (MPa)", false, &qc_ticks));
 
-    // ── Witte achtergrond achter het Rf-blok ─────────────────────────
-    // Overschrijft de qc-tick "30" en de qc-baseline binnen de Rf-band
-    // zodat het Rf-label en de Rf-ticks niet meer over de qc-cijfers
-    // heen vallen. Strekt zich uit over de hele header-hoogte zodat
-    // ook de fs-rij rechts schoon is. Iets breder dan de Rf-band zelf
-    // zodat de gecenterde tekst-glyphs van eventueel laatste fs-tick
-    // niet onder de mask uit kunnen steken. Met een dunne zwarte
-    // verticale separator-lijn als harde grens.
+    // Witte mask achter het Rf-blok zodat eventuele qc-baseline of
+    // "30"-tickcijfer onder de Rf-as wegvalt.
     s.push_str(&format!(
         r##"<rect x="{rx:.2}" y="{ry:.2}" width="{rw:.2}" height="{rh:.2}" fill="#FFFFFF" />"##,
         rx = mask_x,
@@ -568,21 +568,12 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
         rw = (x + w) - mask_x,
         rh = h,
     ));
-    // Verticale separator: dunne zwarte lijn precies op de scheiding
-    // tussen het qc-deel en het Rf-blok.
-    s.push_str(&format!(
-        r##"<line x1="{sx:.2}" y1="{sy:.2}" x2="{sx:.2}" y2="{sy2:.2}" stroke="#000" stroke-width="0.5" />"##,
-        sx = mask_x,
-        sy = y,
-        sy2 = y + h,
-    ));
+    // NB: de verticale separator-lijn wordt door de main render-functie
+    // OVER de hele plot-hoogte getekend (header + grid), niet alleen
+    // binnen de header. Zie de aanroep van build_separator() daar.
 
-    // Rf-blok: het label staat boven de baseline (gecenterd in de Rf-band
-    // op rij-2 hoogte), de "5" tick staat onder de baseline (rij-3).
-    // Hierdoor zit het label op een aparte verticale lijn dan de
-    // tickcijfers en kan er geen overlap meer optreden — los van het
-    // feit dat we ook de overlappende "10" tick hierboven geschrapt
-    // hebben.
+    // Rf-blok: label gecenterd op rij-2 hoogte, ticks ("5" en "10")
+    // onder de baseline op rij-3 hoogte.
     s.push_str(&render_rf_block(rf_band_x, y, rf_band_w, h,
         "Wrijvingsgetal (%)", &rf_ticks));
 

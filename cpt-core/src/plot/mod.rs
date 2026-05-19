@@ -21,6 +21,16 @@ const H: f64 = 841.0;
 /// `build_header` (labels) so the labels sit *on* the gridlines.
 const QC_TICKS: &[u32] = &[1, 5, 10, 15, 20, 25, 30];
 
+/// Hard cap for the fs (Plaatselijke wrijving) axis, MPa. The Dutch
+/// reference plot prints fs on a narrow scale; values above this cap
+/// are clamped to the cap before drawing so the polyline never leaves
+/// the chart area, and an annotation notes the true peak underneath.
+const FS_MAX: f64 = 0.02;
+
+/// Hard cap for the Rf (Wrijvingsgetal) axis, %. Same rationale as
+/// `FS_MAX` — anything above is clamped + reported in the annotation.
+const RF_MAX: f64 = 10.0;
+
 // Outer printable area (page border).
 const BORDER_M: f64 = 24.0;
 const BORDER_W: f64 = W - 2.0 * BORDER_M;
@@ -80,14 +90,22 @@ pub fn render_cpt_svg_with_meta(
     // claiming the rightmost ~10pt, Rf shifts a few pt to the left.
     let rf_band_w = plot_w * 0.20;
     let rf_band_x0 = sbt_x - SBT_GAP - rf_band_w;
-    let qc_axis = LinearAxis { min: 0.0,  max: 30.0, px_start: plot_x, px_end: sbt_x - SBT_GAP };
-    let fs_axis = LinearAxis { min: 0.0,  max: 0.20, px_start: plot_x, px_end: sbt_x - SBT_GAP };
-    let rf_axis = LinearAxis { min: 10.0, max: 0.0,  px_start: rf_band_x0, px_end: rf_band_x0 + rf_band_w };
+    let qc_axis = LinearAxis { min: 0.0,    max: 30.0,   px_start: plot_x,     px_end: sbt_x - SBT_GAP };
+    let fs_axis = LinearAxis { min: 0.0,    max: FS_MAX, px_start: plot_x,     px_end: sbt_x - SBT_GAP };
+    let rf_axis = LinearAxis { min: RF_MAX, max: 0.0,    px_start: rf_band_x0, px_end: rf_band_x0 + rf_band_w };
 
     // ── Build curves as polylines (against NAP depth) ────────────────────
+    // qc has no cap (data above 30 MPa is exceptional; SVG plotClip handles it).
+    // fs + Rf clamp values above the cap to the cap so the polyline stops
+    // exactly on the chart edge instead of leaving the chart area. The
+    // out-of-range peaks are surfaced separately via `build_overflow_note`
+    // so the engineer still sees the true maximum.
     let qc_points = curve_points(cpt, &qc_axis, &z_axis, |p| p.qc, z0);
-    let fs_points = curve_points(cpt, &fs_axis, &z_axis, |p| p.fs, z0);
-    let rf_points = curve_points(cpt, &rf_axis, &z_axis, |p| p.rf, z0);
+    let fs_points = curve_points_clamped(cpt, &fs_axis, &z_axis, |p| p.fs, z0, 0.0, FS_MAX);
+    let rf_points = curve_points_clamped(cpt, &rf_axis, &z_axis, |p| p.rf, z0, 0.0, RF_MAX);
+
+    // Annotation under the plot area when any measured fs / Rf exceeds the cap.
+    let overflow_note = build_overflow_note(cpt, plot_x, plot_y, plot_h);
 
     // ── Grid ─────────────────────────────────────────────────────────────
     let grid = build_grid(plot_x, plot_y, plot_w, plot_h, z_top, z_bot, &qc_axis);
@@ -186,6 +204,7 @@ pub fn render_cpt_svg_with_meta(
 <polyline points="{qc_points}" fill="none" stroke="#1F4FA8" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" />
 <polyline points="{rf_points}" fill="none" stroke="#000000" stroke-width="0.4"  stroke-linejoin="round" stroke-linecap="round" />
 </g>
+{overflow_note}
 {footer}
 </svg>"##,
         bx = BORDER_M,
@@ -222,6 +241,82 @@ where F: Fn(&crate::domain::MeasurementPoint) -> Option<f64>
         }
     }
     s
+}
+
+/// Same as `curve_points` but clamps each data value into `[lo, hi]`
+/// before projecting. The user-visible chart range is fixed (fs 0-0.02,
+/// Rf 0-10), so any measurement above the cap is pinned to the cap
+/// and the polyline sits exactly on the chart edge instead of leaving
+/// the plot area. The true peak is reported separately via
+/// `build_overflow_note` so the engineer still sees the real number.
+fn curve_points_clamped<F>(
+    cpt: &Cpt,
+    x_axis: &LinearAxis,
+    z_axis: &LinearAxis,
+    value: F,
+    z0: f64,
+    lo: f64,
+    hi: f64,
+) -> String
+where
+    F: Fn(&crate::domain::MeasurementPoint) -> Option<f64>,
+{
+    let mut s = String::new();
+    for p in &cpt.points {
+        if let Some(v) = value(p) {
+            let clamped = v.clamp(lo, hi);
+            let x = x_axis.project(clamped);
+            let z_at = z0 - p.depth;
+            let y = z_axis.project(z_at);
+            if !s.is_empty() {
+                s.push(' ');
+            }
+            s.push_str(&format!("{:.2},{:.2}", x, y));
+        }
+    }
+    s
+}
+
+/// If any fs > `FS_MAX` or Rf > `RF_MAX` is present, emit a single-line
+/// SVG `<text>` just under the plot area noting the peaks + depths.
+/// Bescheiden: max één regel, niet vetgedrukt. Returns "" when nothing
+/// overflows so the SVG stays unchanged in the common case.
+fn build_overflow_note(cpt: &Cpt, plot_x: f64, plot_y: f64, plot_h: f64) -> String {
+    let mut fs_peak: Option<(f64, f64)> = None; // (value, depth)
+    let mut rf_peak: Option<(f64, f64)> = None;
+    for p in &cpt.points {
+        if let Some(v) = p.fs {
+            if v > FS_MAX {
+                if fs_peak.map(|(prev, _)| v > prev).unwrap_or(true) {
+                    fs_peak = Some((v, p.depth));
+                }
+            }
+        }
+        if let Some(v) = p.rf {
+            if v > RF_MAX {
+                if rf_peak.map(|(prev, _)| v > prev).unwrap_or(true) {
+                    rf_peak = Some((v, p.depth));
+                }
+            }
+        }
+    }
+    if fs_peak.is_none() && rf_peak.is_none() {
+        return String::new();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if let Some((v, d)) = fs_peak {
+        parts.push(format!("fs piek {:.3} MPa @ {:.2} m (boven schaal)", v, d));
+    }
+    if let Some((v, d)) = rf_peak {
+        parts.push(format!("Rf piek {:.1} % @ {:.2} m (boven schaal)", v, d));
+    }
+    let text = parts.join("   |   ");
+    // Position: 9 pt below the plot bottom, left-aligned with the plot.
+    let y = plot_y + plot_h + 9.0;
+    format!(
+        r##"<text x="{x:.1}" y="{y:.1}" font-family="Arial, sans-serif" font-size="6.5" fill="#555">{text}</text>"##,
+        x = plot_x,
+    )
 }
 
 // ─── Grid ──────────────────────────────────────────────────────────────
@@ -391,8 +486,8 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     // inverted). De Rf-as zit in een eigen rechter-band en wordt visueel
     // hard gescheiden van fs/qc zodat het "Wrijvingsgetal (%)" label
     // niet meer over de qc-tickcijfers of fs-labels heen valt, en het
-    // laatste fs-tickcijfer "0.20" (waarvan de rechter-helft als losse
-    // "20" rechtsboven uitstak) volledig binnen de witte mask-zone valt.
+    // laatste fs-tickcijfer (nu "0.020", voorheen "0.20" toen de cap
+    // nog 0.20 MPa was) volledig binnen de witte mask-zone valt.
     let row_h = h / 3.0;
     let mut s = String::new();
 
@@ -405,19 +500,22 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     const HEADER_GAP: f64 = 2.0;
     let mask_x = rf_band_x - HEADER_GAP;
     let qc_visible_w = mask_x - x;
-    // De fs-as loopt 0 → 0.20 over de volle breedte `w`. Een fs-tick met
-    // genormaliseerde positie `tv` zit op `x + tv*w`. We willen géén
-    // fs-tickcijfers die — gerekend op hun centerpunt — bij of voorbij
-    // de witte mask-zone vallen, anders zien we de rechter-helft van
-    // bv. "0.20" als losse "20" naast de Rf-as uitsteken.
+    // De fs-as loopt 0 → FS_MAX (0.02 MPa) over de volle breedte `w`.
+    // Een fs-tick met genormaliseerde positie `tv` zit op `x + tv*w`.
+    // We willen géén fs-tickcijfers die — gerekend op hun centerpunt —
+    // bij of voorbij de witte mask-zone vallen, anders zou bv. "0.020"
+    // als losse "020" naast de Rf-as uitsteken.
     let fs_mask_threshold = (qc_visible_w / w) - 0.005;
 
-    // Build per-row tick lists. Skip de leftmost few fs-labels zodat de
-    // "Plaatselijke wrijving (MPa)" label ruimte heeft (start bij i=2),
-    // en clip rechts op de Rf-band-grens (filter de laatste tick(s) die
-    // anders onder/achter de witte Rf-mask zouden eindigen).
-    let fs_ticks: Vec<(f64, String)> = (2..=10)
-        .map(|i| (i as f64 * 0.02 / 0.20, format!("{:.2}", i as f64 * 0.02)))
+    // Build per-row tick lists. fs schaal is 0..FS_MAX (0.02 MPa); we
+    // tonen 0.005 / 0.010 / 0.015 / 0.020 als tickwaardes — vier evenredig
+    // verdeelde punten op de schaal. We slaan de leftmost waarde "0"
+    // over zodat de "Plaatselijke wrijving (MPa)" label ruimte heeft,
+    // en clippen rechts op de Rf-band-grens.
+    let fs_tick_values: [f64; 4] = [0.005, 0.010, 0.015, 0.020];
+    let fs_ticks: Vec<(f64, String)> = fs_tick_values
+        .iter()
+        .map(|v| (v / FS_MAX, format!("{:.3}", v)))
         .filter(|(tv, _)| *tv <= fs_mask_threshold)
         .collect();
     // qc-tick "30" valt rechts buiten de qc-band omdat de Rf-band daar
@@ -935,13 +1033,14 @@ mod tests {
     /// De header mag geen losse qc-"30" tickcijfer als <text> bevatten:
     /// die zou rechts in/achter het Rf-blok terechtkomen, en is in een
     /// eerdere render-bug zichtbaar geweest als overlap. Tegelijkertijd
-    /// mag de laatste fs-tick (0.20) niet meer als <text> in de SVG
-    /// staan — de rechter-helft van die tekst stak in een eerdere
-    /// render uit als losse "20" in de rechter-bovenhoek. We checken
-    /// daarom dat noch ">30<" noch ">0.20<" als text-content voorkomt.
-    /// De "10" Rf-tick mag óók niet meer als tickcijfer staan, omdat
-    /// die op dezelfde baseline als het "Wrijvingsgetal (%)" label
-    /// viel en daarmee "Wo̶jvingsgetal"-overlap veroorzaakte.
+    /// mag het oude fs-tick label "0.20" (uit de oude cap = 0.20 MPa
+    /// periode) niet meer als <text> in de SVG staan — niet omdat de
+    /// nieuwe ticks die ooit zouden produceren (cap is nu 0.02 MPa,
+    /// ticks zijn 0.005…0.020), maar om regressie te voorkomen mocht
+    /// de cap ooit weer omhoog gaan zonder dat de mask-filtering wordt
+    /// bijgewerkt. De "10" Rf-tick mag óók niet als tickcijfer staan,
+    /// omdat die op dezelfde baseline als het "Wrijvingsgetal (%)"
+    /// label viel en daarmee "Wo̶jvingsgetal"-overlap veroorzaakte.
     #[test]
     fn header_omits_overlapping_axis_labels() {
         let cpt = sample_cpt();
@@ -952,7 +1051,8 @@ mod tests {
             !svg.contains(">30<"),
             "qc tick label '30' should not be emitted as standalone text"
         );
-        // Het laatste fs-label "0.20" moet ook weg zijn.
+        // Het oude fs-label "0.20" (uit de tijd dat de cap 0.20 MPa
+        // was) mag niet als standalone text aanwezig zijn.
         assert!(
             !svg.contains(">0.20<"),
             "fs tick label '0.20' should not be emitted as standalone text"
@@ -970,6 +1070,84 @@ mod tests {
             count_10, 1,
             "exactly one '10' tick label expected (qc only), found {count_10}"
         );
+    }
+
+    /// fs en Rf assen zijn hard gecapt op FS_MAX (0.02 MPa) en RF_MAX
+    /// (10 %). Een sondering met fs-waardes ver boven de cap mag NIET
+    /// een polyline produceren die de plot-area verlaat: elk fs-coördinaat
+    /// in de gegenereerde polyline moet binnen de fs-projectierange
+    /// liggen (≤ x voor fs=FS_MAX). En als er overflow is, moet er een
+    /// annotatie onder de chart staan die de echte piekwaarde toont.
+    #[test]
+    fn axis_caps_clip_fs_at_002() {
+        // Bouw een CPT waarin fs sterk varieert, met meerdere punten
+        // boven 0.02 MPa (peak 0.034 — bewust een waarde die de oude
+        // 0.20-schaal trivially zou hebben gehouden maar die de nieuwe
+        // 0.02-schaal echt overschrijdt).
+        let cpt = Cpt {
+            id: "CAP01".into(),
+            metadata: Metadata { ground_level_nap: Some(0.0), source_file: "x.gef".into(), ..Default::default() },
+            position: None,
+            points: vec![
+                MeasurementPoint { depth: 0.5, depth_nap: None, qc: Some(2.0), fs: Some(0.010), rf: Some(0.5),  u2: None, inclination: None },
+                MeasurementPoint { depth: 1.0, depth_nap: None, qc: Some(3.0), fs: Some(0.034), rf: Some(1.1),  u2: None, inclination: None },
+                MeasurementPoint { depth: 1.5, depth_nap: None, qc: Some(4.0), fs: Some(0.025), rf: Some(0.6),  u2: None, inclination: None },
+                MeasurementPoint { depth: 2.0, depth_nap: None, qc: Some(2.5), fs: Some(0.012), rf: Some(12.4), u2: None, inclination: None },
+            ],
+        };
+        let svg = render_cpt_svg(&cpt);
+
+        // Extract de eerste fs-polyline (stroke #D02828 — fs is rood).
+        // Format: <polyline points="x1,y1 x2,y2 …" fill="none" stroke="#D02828" …
+        let fs_poly = extract_polyline_with_stroke(&svg, "#D02828")
+            .expect("fs polyline should be present in the SVG");
+
+        // De fs-as loopt van plot_x = BORDER_M(24) + PLOT_LEFT_M(38) = 62
+        // tot sbt_x - SBT_GAP. sbt_x = plot_x + plot_w - 10. plot_w =
+        // BORDER_W - 38 - 14 = (595 - 48) - 52 = 495. Dus sbt_x = 62+495-10 = 547,
+        // fs_axis.px_end = 547 - 2 = 545.
+        let fs_axis_px_end = 545.0_f64;
+        let tolerance = 0.5_f64; // round-off
+        for (x, _y) in &fs_poly {
+            assert!(
+                *x <= fs_axis_px_end + tolerance,
+                "fs polyline x={x} exceeds axis cap px {fs_axis_px_end} — line is leaving chart area"
+            );
+        }
+
+        // De annotatie met de echte fs piek moet aanwezig zijn.
+        assert!(
+            svg.contains("fs piek"),
+            "expected overflow note about fs peak in SVG output"
+        );
+        assert!(
+            svg.contains("Rf piek"),
+            "expected overflow note about Rf peak in SVG output"
+        );
+    }
+
+    /// Helper: vind de eerste `<polyline points="…" … stroke="<stroke>" …>`
+    /// en parse de points-attribute naar een Vec<(x, y)>.
+    fn extract_polyline_with_stroke(svg: &str, stroke: &str) -> Option<Vec<(f64, f64)>> {
+        // We zoeken op `stroke="<stroke>"` en gaan dan terug naar de
+        // bijbehorende `points="…"`. Simpele tekstuele scan want elke
+        // polyline staat op één regel in de output.
+        for line in svg.lines() {
+            if !line.contains("polyline") { continue; }
+            if !line.contains(&format!("stroke=\"{}\"", stroke)) { continue; }
+            let pts_start = line.find("points=\"")? + "points=\"".len();
+            let pts_end = pts_start + line[pts_start..].find('"')?;
+            let s = &line[pts_start..pts_end];
+            let mut out: Vec<(f64, f64)> = Vec::new();
+            for tok in s.split_whitespace() {
+                let mut it = tok.split(',');
+                let x = it.next()?.parse::<f64>().ok()?;
+                let y = it.next()?.parse::<f64>().ok()?;
+                out.push((x, y));
+            }
+            return Some(out);
+        }
+        None
     }
 
     /// Voor een ~20 m sondering met maaiveld bij NAP -1.06 valt de

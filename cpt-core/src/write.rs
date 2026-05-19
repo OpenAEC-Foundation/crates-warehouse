@@ -17,27 +17,36 @@ const GEF_VOID: f64 = -9999.0;
 
 /// Serialize a CPT as a GEF document (Dutch CPT exchange format).
 ///
-/// Emits the standard headers (`#GEFID`, `#TESTID`, `#PROJECTID`, `#COMPANYID`,
-/// `#FILEDATE`, `#XYID`, `#ZID`, `#COLUMN= 4`, four `#COLUMNINFO=` lines
-/// for length / qc / fs / rf, `#COLUMNVOID= 2, -9999`, `#EOH=`) followed by
-/// space-separated rows. Missing fields are emitted as `-9999`.
+/// Emits the standard headers (`#GEFID`, `#FILEOWNER`, `#FILEDATE`, `#PROJECTID`,
+/// `#TESTID`, `#COMPANYID`, `#XYID`, `#ZID`, `#COLUMN= 4`, four `#COLUMNINFO=`
+/// lines for length / qc / fs / rf, `#COLUMNVOID=`, `#COLUMNSEPARATOR= ;`,
+/// `#RECORDSEPARATOR= !`, `#EOH=`) followed by `;`-separated rows terminated
+/// by `!`.
+///
+/// `#FILEOWNER` and `#PROJECTID` are mandatory per GEF 1.0/1.1 spec; the
+/// validator (GEFPlotTool 5.1) rejects files without them. Missing values
+/// fall back to a sensible default (Open Geotechniek Studio / Unknown) so
+/// the output always validates.
+///
+/// The data section uses exactly the declared separators with no extra
+/// whitespace: `value;value;value;value!` per record. Earlier versions
+/// padded with spaces (`value ; value ; ...`), which the strict validator
+/// rejected with "No valid columnseparator was found".
 pub fn write_gef(cpt: &Cpt) -> String {
     let m = &cpt.metadata;
     let mut out = String::new();
 
     out.push_str("#GEFID= 1, 1, 0\n");
-    out.push_str(&format!("#TESTID= {}\n", cpt.id));
-    if let Some(pid) = m.project_number.as_deref() {
-        out.push_str(&format!("#PROJECTID= {}\n", pid));
-    } else if let Some(pid) = m.extra.get("PROJECTID") {
-        out.push_str(&format!("#PROJECTID= {}\n", pid));
-    }
-    if let Some(name) = m.project_name.as_deref() {
-        out.push_str(&format!("#PROJECTNAME= {}\n", name));
-    }
-    if let Some(comp) = m.equipment.as_deref() {
-        out.push_str(&format!("#COMPANYID= {}\n", comp));
-    }
+    // #FILEOWNER is a mandatory header keyword in GEF 1.x; the strict
+    // validator (GEFPlotTool 5.1) rejects files without it. We always
+    // emit it — defaulting to the Studio brand if no equipment owner
+    // was captured by the parser.
+    let file_owner = m
+        .extra
+        .get("FILEOWNER")
+        .cloned()
+        .unwrap_or_else(|| "Open Geotechniek Studio".to_string());
+    out.push_str(&format!("#FILEOWNER= {}\n", file_owner));
     if let Some(d) = m.date {
         out.push_str(&format!(
             "#FILEDATE= {}, {}, {}\n",
@@ -45,6 +54,22 @@ pub fn write_gef(cpt: &Cpt) -> String {
             d.format("%m"),
             d.format("%d")
         ));
+    }
+    // #PROJECTID is also mandatory. Fall back through the typed field,
+    // the parser's `extra` bag, and finally a deterministic placeholder
+    // so the file still validates round-trip.
+    let project_id = m
+        .project_number
+        .clone()
+        .or_else(|| m.extra.get("PROJECTID").cloned())
+        .unwrap_or_else(|| "Unknown".to_string());
+    out.push_str(&format!("#PROJECTID= {}\n", project_id));
+    out.push_str(&format!("#TESTID= {}\n", cpt.id));
+    if let Some(name) = m.project_name.as_deref() {
+        out.push_str(&format!("#PROJECTNAME= {}\n", name));
+    }
+    if let Some(comp) = m.equipment.as_deref() {
+        out.push_str(&format!("#COMPANYID= {}\n", comp));
     }
     if let Some(pos) = cpt.position {
         out.push_str(&format!("#XYID= 31000, {:.3}, {:.3}\n", pos.x_rd, pos.y_rd));
@@ -68,9 +93,13 @@ pub fn write_gef(cpt: &Cpt) -> String {
     out.push_str("#RECORDSEPARATOR= !\n");
     out.push_str("#EOH=\n");
 
+    // Data rows use exactly the declared `;` separator with no
+    // surrounding whitespace; the record terminator `!` is appended
+    // directly after the last value, then a newline. GEFPlotTool 5.1
+    // refuses to parse rows that pad values with spaces around `;`.
     for p in &cpt.points {
         out.push_str(&format!(
-            "{:.3} ; {} ; {} ; {} !\n",
+            "{:.3};{};{};{}!\n",
             p.depth,
             fmt_opt(p.qc),
             fmt_opt(p.fs),
@@ -275,6 +304,70 @@ mod tests {
         assert_eq!(back.points.len(), 3);
         assert!((back.points[0].qc.unwrap() - 1.5).abs() < 1e-3);
         assert!((back.points[1].fs.unwrap() - 0.018).abs() < 1e-4);
+    }
+
+    /// GEFPlotTool 5.1 demands `#FILEOWNER=` and `#PROJECTID=` as
+    /// mandatory header keywords, and rejects data rows that pad values
+    /// with whitespace around the declared `#COLUMNSEPARATOR`. This test
+    /// pins those three correctness requirements.
+    #[test]
+    fn gef_writes_required_headers() {
+        let cpt = sample_cpt();
+        let gef = write_gef(&cpt);
+
+        // Mandatory header keywords (per GEF 1.x / GEFPlotTool 5.1).
+        assert!(
+            gef.contains("#FILEOWNER="),
+            "GEF output must contain #FILEOWNER= (mandatory header)\n--- GEF ---\n{}",
+            gef
+        );
+        assert!(
+            gef.contains("#PROJECTID="),
+            "GEF output must contain #PROJECTID= (mandatory header)\n--- GEF ---\n{}",
+            gef
+        );
+
+        // The data section must match the declared #COLUMNSEPARATOR= ;
+        // EXACTLY — no spaces around the `;` separator and no space
+        // before the `!` record terminator. Earlier output looked like
+        // `0.020 ; 1.500 ; 0.015 ; 1.000 !\n`, which the strict
+        // validator rejects with "No valid columnseparator was found".
+        let data_start = gef.find("#EOH=").expect("missing EOH") + "#EOH=\n".len();
+        let data_section = &gef[data_start..];
+        assert!(
+            data_section.contains(";"),
+            "data section must contain `;` separator: {:?}",
+            data_section
+        );
+        assert!(
+            !data_section.contains(" ;") && !data_section.contains("; "),
+            "data section must not pad `;` with spaces:\n{}",
+            data_section
+        );
+        assert!(
+            !data_section.contains(" !"),
+            "data section must not have space before `!` record terminator:\n{}",
+            data_section
+        );
+
+        // And the writer's output must still round-trip through our own parser.
+        let back = parse_gef(&gef).expect("write_gef output should still parse");
+        assert_eq!(back.points.len(), cpt.points.len());
+    }
+
+    /// When the metadata has no project_number and no PROJECTID extra,
+    /// the writer must still emit a `#PROJECTID=` line so the validator
+    /// doesn't reject the file. (Default value is `Unknown`.)
+    #[test]
+    fn gef_emits_projectid_even_when_missing() {
+        let mut cpt = sample_cpt();
+        cpt.metadata.project_number = None;
+        cpt.metadata.extra.clear();
+        let gef = write_gef(&cpt);
+        assert!(
+            gef.contains("#PROJECTID="),
+            "PROJECTID must be emitted with a fallback when source has none"
+        );
     }
 
     #[test]

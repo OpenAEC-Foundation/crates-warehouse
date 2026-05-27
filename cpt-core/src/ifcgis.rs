@@ -47,7 +47,7 @@ pub type BoreJson = serde_json::Value;
 // nieuwe velden zijn `#[serde(default, skip_serializing_if = ...)]`
 // zodat ze niet hoeven te bestaan in input én niet uitgeschreven
 // worden wanneer ze leeg/None zijn (forward + backward compat).
-const SCHEMA_VERSION: &str = "ifcgis-0.3";
+const SCHEMA_VERSION: &str = "ifcgis-0.4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -86,6 +86,10 @@ pub struct ProjectFile {
     /// bestand willen lezen zonder app-state te begrijpen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliverable: Option<Deliverable>,
+    /// Geotechnische + constructieve berekeningen — sinds 0.4.
+    /// Per-module input JSON-payload, herrekend bij open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calculations: Vec<CalculationDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -416,6 +420,30 @@ pub struct IfcAnnotation {
     pub properties: serde_json::Value,
 }
 
+/// Geotechnische / constructieve berekening — sinds ifcgis-0.4.
+///
+/// Eén entry per door de gebruiker aangemaakte berekening; het
+/// `module_id` selecteert welke calculator de `input`-payload
+/// interpreteert. `input` is open JSON zodat ieder module-team zijn
+/// eigen schema kan bijhouden zonder cpt-core bij elke iteratie te
+/// hoeven hertypen. Resultaten worden niet opgeslagen — die rekenen
+/// we opnieuw uit bij open (cheap + altijd vers t.o.v. de huidige
+/// CPT/Bore-set).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalculationDef {
+    pub id: String,
+    pub module_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpt_refs: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bore_refs: Option<Vec<String>>,
+}
+
 /// Serialise a project (metadata + CPTs + optional bores/tekening/
 /// title_block) to a pretty-printed `.ifcgis` JSON string.
 pub fn save(project: ProjectInfo, cpts: Vec<Cpt>) -> Result<String, CptError> {
@@ -449,6 +477,8 @@ pub fn save_full(
         // (serde_json::Value) wanneer ze die wél willen meegeven.
         gis: None,
         deliverable: None,
+        // 0.4-veld: berekeningen — leeg op de korte save-pad.
+        calculations: Vec::new(),
     };
     to_ifcx_json(&file)
 }
@@ -1075,6 +1105,7 @@ fn reconstruct_from_entities(raw: &Value, data: &[Value]) -> Result<ProjectFile,
         title_block: None,
         gis: None,
         deliverable: None,
+        calculations: Vec::new(),
     })
 }
 
@@ -1554,9 +1585,10 @@ mod tests {
             }),
             gis: Some(sample_gis()),
             deliverable: Some(sample_deliverable()),
+            calculations: Vec::new(),
         };
         let json = serde_json::to_string_pretty(&file).unwrap();
-        assert!(json.contains("\"schema\": \"ifcgis-0.3\""));
+        assert!(json.contains("\"schema\": \"ifcgis-0.4\""));
         assert!(json.contains("\"gis\""), "expected gis section in output");
         assert!(json.contains("\"deliverable\""), "expected deliverable section");
         assert!(json.contains("\"IfcDrawingSheet\""));
@@ -1679,6 +1711,7 @@ mod tests {
             }),
             gis: Some(sample_gis()),
             deliverable: Some(sample_deliverable()),
+            calculations: Vec::new(),
         }
     }
 
@@ -1696,6 +1729,7 @@ mod tests {
             title_block: None,
             gis: None,
             deliverable: None,
+            calculations: Vec::new(),
         };
         let ifcx = to_ifcx_json(&file).expect("to_ifcx_json should succeed");
         // The output is IFCX-shaped (not legacy).

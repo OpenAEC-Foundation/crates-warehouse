@@ -586,11 +586,14 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
         .collect();
 
     // fs-rij: baseline volle breedte, tick-labels gefilterd binnen mask.
+    // De fs-schaalstok eindigt op 1/3 (de 10 MPa-lijn), dus de rechter ⅔
+    // is leeg — daar zetten we de titel (rechts uitgelijnd net vóór de
+    // Rf-band) zodat hij niet meer over de 0,05/0,10-cijfers loopt.
     s.push_str(&render_axis_row(x, y + 0.0 * row_h, w, row_h, "#D02828",
-        "Plaatselijke wrijving (MPa)", false, &fs_ticks));
-    // qc-rij: baseline volle breedte, tick-labels eindigen bij "25".
+        "Plaatselijke wrijving (MPa)", mask_x - 3.0, "end", &fs_ticks));
+    // qc-rij: titel links, tick-labels eindigen bij "25".
     s.push_str(&render_axis_row(x, y + 1.0 * row_h, w, row_h, "#1F4FA8",
-        "Conusweerstand (MPa)", false, &qc_ticks));
+        "Conusweerstand (MPa)", x + 1.0, "start", &qc_ticks));
 
     // Witte mask achter het Rf-blok zodat eventuele qc-baseline of
     // "30"-tickcijfer onder de Rf-as wegvalt.
@@ -665,7 +668,7 @@ fn render_rf_block(
 
 fn render_axis_row(
     x: f64, row_top: f64, w: f64, row_h: f64,
-    color: &str, label: &str, label_right: bool,
+    color: &str, label: &str, label_x: f64, label_anchor: &str,
     ticks: &[(f64, String)],
 ) -> String {
     let mut s = String::new();
@@ -678,11 +681,15 @@ fn render_axis_row(
         x, base_y, x + w, base_y, color
     ));
 
-    // axis label
-    let (lx, ta) = if label_right { (x + w - 1.0, "end") } else { (x + 1.0, "start") };
+    // axis label — expliciete x + anchor. De fs-titel staat rechts in de
+    // lege ruimte voorbij de schaalstok (die op 1/3 bij de 10 MPa-lijn
+    // eindigt), de qc-titel links. Zo botst de titel niet meer met de
+    // samengeperste 0,05/0,10-tickcijfers.
     s.push_str(&format!(
         r##"<text x="{lx:.1}" y="{ly:.2}" font-family="Arial, sans-serif" font-size="6.5" fill="{color}" font-weight="700" text-anchor="{ta}">{label}</text>"##,
+        lx = label_x,
         ly = label_y,
+        ta = label_anchor,
     ));
 
     // tick labels + short ticks
@@ -1054,92 +1061,71 @@ mod tests {
         assert!(png.starts_with(&[0x89, 0x50, 0x4E, 0x47])); // PNG magic
     }
 
-    /// De header mag geen losse qc-"30" tickcijfer als <text> bevatten:
-    /// die zou rechts in/achter het Rf-blok terechtkomen, en is in een
-    /// eerdere render-bug zichtbaar geweest als overlap. Tegelijkertijd
-    /// mag het oude fs-tick label "0.20" (uit de oude cap = 0.20 MPa
-    /// periode) niet meer als <text> in de SVG staan — niet omdat de
-    /// nieuwe ticks die ooit zouden produceren (cap is nu 0.02 MPa,
-    /// ticks zijn 0.005…0.020), maar om regressie te voorkomen mocht
-    /// de cap ooit weer omhoog gaan zonder dat de mask-filtering wordt
-    /// bijgewerkt. De "10" Rf-tick mag óók niet als tickcijfer staan,
-    /// omdat die op dezelfde baseline als het "Wrijvingsgetal (%)"
-    /// label viel en daarmee "Wo̶jvingsgetal"-overlap veroorzaakte.
+    /// Header-invarianten na de schaal-herziening:
+    ///  • de qc-as capt op 25, dus géén los "30"-tickcijfer (de gridlijn
+    ///    op 30 mag blijven — die testen we niet, alleen het label);
+    ///  • de fs-schaalstok loopt 0,05 → 0,25 en eindigt op de 10 MPa-lijn,
+    ///    dus "0,25" hoort als zichtbaar tickcijfer aanwezig te zijn;
+    ///  • de fs-titel staat rechts in de lege ruimte voorbij de schaalstok
+    ///    (niet meer over de 0,05/0,10-cijfers heen).
     #[test]
     fn header_omits_overlapping_axis_labels() {
         let cpt = sample_cpt();
         let svg = render_cpt_svg(&cpt);
-        // De `>30<` text-glyph moet weg zijn (de qc-as gridlijn op 30
-        // mag wel blijven — die test we niet, alleen het label).
         assert!(
             !svg.contains(">30<"),
             "qc tick label '30' should not be emitted as standalone text"
         );
-        // Het oude fs-label "0.20" (uit de tijd dat de cap 0.20 MPa
-        // was) mag niet als standalone text aanwezig zijn.
         assert!(
-            !svg.contains(">0.20<"),
-            "fs tick label '0.20' should not be emitted as standalone text"
+            svg.contains(">0.25<"),
+            "fs schaalstok top '0.25' should be present as a tick label"
         );
-        // De "10" Rf-tick moet weg zijn (overlapte met het label).
-        // We controleren dit indirect: het Rf-label staat in de SVG
-        // én er mag geen `>10<` text-glyph zijn (omdat de qc-as ook
-        // geen "10" als standalone glyph rendert nu — die wordt wel
-        // als ">10<" gerendered door qc, dus we kunnen niet zomaar
-        // op afwezigheid testen). In plaats daarvan: tel hoe vaak
-        // ">10<" voorkomt — dat zou exact 1x moeten zijn (de qc-rij)
-        // ipv 2x (qc-rij + Rf-rij).
-        let count_10 = svg.matches(">10<").count();
-        assert_eq!(
-            count_10, 1,
-            "exactly one '10' tick label expected (qc only), found {count_10}"
+        assert!(
+            svg.contains("Plaatselijke wrijving (MPa)"),
+            "fs axis title should be present (relocated to the empty right area)"
         );
     }
 
-    /// fs en Rf assen zijn hard gecapt op FS_MAX (0.02 MPa) en RF_MAX
-    /// (10 %). Een sondering met fs-waardes ver boven de cap mag NIET
-    /// een polyline produceren die de plot-area verlaat: elk fs-coördinaat
-    /// in de gegenereerde polyline moet binnen de fs-projectierange
-    /// liggen (≤ x voor fs=FS_MAX). En als er overflow is, moet er een
-    /// annotatie onder de chart staan die de echte piekwaarde toont.
+    /// De fs-as is hard gecapt op FS_MAX (0.25 MPa) ÉN eindigt nu op de
+    /// qc = 10 MPa-positie (1/3 van de qc-breedte) — "plaatselijke wrijving
+    /// nooit breder dan de 10 MPa-lijn". Een sondering met fs ver boven de
+    /// cap mag dus GEEN polyline-coördinaat produceren voorbij die 10 MPa-x.
+    /// En bij overschrijding moet er een piek-annotatie in de SVG staan.
     #[test]
-    fn axis_caps_clip_fs_at_002() {
-        // Bouw een CPT waarin fs sterk varieert, met meerdere punten
-        // boven 0.02 MPa (peak 0.034 — bewust een waarde die de oude
-        // 0.20-schaal trivially zou hebben gehouden maar die de nieuwe
-        // 0.02-schaal echt overschrijdt).
+    fn fs_polyline_clamped_to_10mpa_line() {
+        // fs-pieken bewust BOVEN FS_MAX (0.25) zodat de clamp + de
+        // "boven schaal"-annotatie getriggerd worden; één Rf-piek > 10 %.
         let cpt = Cpt {
             id: "CAP01".into(),
             metadata: Metadata { ground_level_nap: Some(0.0), source_file: "x.gef".into(), ..Default::default() },
             position: None,
             points: vec![
-                MeasurementPoint { depth: 0.5, depth_nap: None, qc: Some(2.0), fs: Some(0.010), rf: Some(0.5),  u2: None, inclination: None },
-                MeasurementPoint { depth: 1.0, depth_nap: None, qc: Some(3.0), fs: Some(0.034), rf: Some(1.1),  u2: None, inclination: None },
-                MeasurementPoint { depth: 1.5, depth_nap: None, qc: Some(4.0), fs: Some(0.025), rf: Some(0.6),  u2: None, inclination: None },
-                MeasurementPoint { depth: 2.0, depth_nap: None, qc: Some(2.5), fs: Some(0.012), rf: Some(12.4), u2: None, inclination: None },
+                MeasurementPoint { depth: 0.5, depth_nap: None, qc: Some(2.0), fs: Some(0.10), rf: Some(0.5),  u2: None, inclination: None },
+                MeasurementPoint { depth: 1.0, depth_nap: None, qc: Some(3.0), fs: Some(0.50), rf: Some(1.1),  u2: None, inclination: None },
+                MeasurementPoint { depth: 1.5, depth_nap: None, qc: Some(4.0), fs: Some(0.30), rf: Some(0.6),  u2: None, inclination: None },
+                MeasurementPoint { depth: 2.0, depth_nap: None, qc: Some(2.5), fs: Some(0.05), rf: Some(12.4), u2: None, inclination: None },
             ],
         };
         let svg = render_cpt_svg(&cpt);
 
         // Extract de eerste fs-polyline (stroke #D02828 — fs is rood).
-        // Format: <polyline points="x1,y1 x2,y2 …" fill="none" stroke="#D02828" …
         let fs_poly = extract_polyline_with_stroke(&svg, "#D02828")
             .expect("fs polyline should be present in the SVG");
 
-        // De fs-as loopt van plot_x = BORDER_M(24) + PLOT_LEFT_M(38) = 62
-        // tot sbt_x - SBT_GAP. sbt_x = plot_x + plot_w - 10. plot_w =
-        // BORDER_W - 38 - 14 = (595 - 48) - 52 = 495. Dus sbt_x = 62+495-10 = 547,
-        // fs_axis.px_end = 547 - 2 = 545.
-        let fs_axis_px_end = 545.0_f64;
+        // plot_x = BORDER_M(24) + PLOT_LEFT_M(38) = 62. De oude as-eind
+        // (= sbt_x - SBT_GAP) lag op 545; de fs-as eindigt nu op de
+        // 10 MPa-positie = plot_x + (545 - plot_x) * 10/30 = 223.
+        // De geclampte fs-lijn mag die x niet voorbij.
+        let fs_axis_px_end = 62.0 + (545.0 - 62.0) * (10.0 / 30.0); // = 223.0
         let tolerance = 0.5_f64; // round-off
         for (x, _y) in &fs_poly {
             assert!(
                 *x <= fs_axis_px_end + tolerance,
-                "fs polyline x={x} exceeds axis cap px {fs_axis_px_end} — line is leaving chart area"
+                "fs polyline x={x} exceeds the 10 MPa-line cap px {fs_axis_px_end:.1}"
             );
         }
 
-        // De annotatie met de echte fs piek moet aanwezig zijn.
+        // Bij fs/Rf boven de schaal moet de piek-annotatie aanwezig zijn.
         assert!(
             svg.contains("fs piek"),
             "expected overflow note about fs peak in SVG output"

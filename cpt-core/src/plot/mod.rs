@@ -101,7 +101,12 @@ pub fn render_cpt_svg_with_meta(
     let rf_band_w = plot_w * 0.20;
     let rf_band_x0 = sbt_x - SBT_GAP - rf_band_w;
     let qc_axis = LinearAxis { min: 0.0,    max: 30.0,   px_start: plot_x,     px_end: sbt_x - SBT_GAP };
-    let fs_axis = LinearAxis { min: 0.0,    max: FS_MAX, px_start: plot_x,     px_end: sbt_x - SBT_GAP };
+    // De plaatselijke wrijving (fs) mag NOOIT breder zijn dan de 10 MPa-lijn:
+    // fs = FS_MAX landt exact op de qc = 10 MPa positie (= 1/3 van de qc-as,
+    // want qc loopt 0..30). Waarden boven FS_MAX worden geclampt, dus de
+    // rode lijn komt nooit voorbij de 10 MPa-gridlijn.
+    let fs_axis_end = plot_x + (sbt_x - SBT_GAP - plot_x) * (10.0 / 30.0);
+    let fs_axis = LinearAxis { min: 0.0,    max: FS_MAX, px_start: plot_x,     px_end: fs_axis_end };
     let rf_axis = LinearAxis { min: RF_MAX, max: 0.0,    px_start: rf_band_x0, px_end: rf_band_x0 + rf_band_w };
     // u2-axis: zelfde x-range als qc, eigen schaal (0..U2_MAX MPa) zodat
     // de waterspanning-curve los van de qc-schaal leesbaar wordt.
@@ -550,9 +555,11 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     // conform de Nederlandse referentie-schaalstok (0 · 0,05 · 0,10 ·
     // 0,15 · 0,20 · 0,25). 0,00 valt samen met de qc-0 dus die laten we weg.
     let fs_tick_values: [f64; 5] = [0.05, 0.10, 0.15, 0.20, 0.25];
+    // fs-schaalstok loopt mee met de fs-as die nu eindigt op de 10 MPa-lijn
+    // (= 1/3 van de qc-breedte); daarom de extra factor 10/30.
     let fs_ticks: Vec<(f64, String)> = fs_tick_values
         .iter()
-        .map(|v| ((v / FS_MAX) * scale, format!("{:.2}", v)))
+        .map(|v| ((v / FS_MAX) * (10.0 / 30.0) * scale, format!("{:.2}", v)))
         .filter(|(tv, _)| *tv <= fs_mask_threshold)
         .collect();
     // qc ticks gecorrigeerd zodat ze EXACT op de verticale grid-lijnen

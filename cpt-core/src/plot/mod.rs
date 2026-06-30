@@ -637,10 +637,12 @@ fn render_rf_block(
         x, base_y, x + w, base_y, color
     ));
 
-    // Label: gecenterd boven de baseline, op rij-2 hoogte. Hierdoor
-    // botst het niet met de tickcijfers op rij-3 of met de qc-tickrij
-    // erboven (rij-2 baseline ligt iets hoger dan het label hier).
-    let label_y = y_top + row_h * 1.5;
+    // Label bovenaan de band, op DEZELFDE hoogte als de fs/qc-astitels
+    // (rij-1, factor 0.62) i.p.v. in het midden — zo staan alle drie de
+    // astitels netjes op één lijn bovenin. De Rf-band is een eigen kolom
+    // rechts van de mask, dus botst hier niet met de tickcijfers (die
+    // onderaan bij de baseline op rij-3 staan).
+    let label_y = y_top + row_h * 0.62;
     s.push_str(&format!(
         r##"<text x="{lx:.2}" y="{ly:.2}" font-family="Arial, sans-serif" font-size="6.5" fill="{color}" font-weight="700" text-anchor="middle">{label}</text>"##,
         lx = x + w / 2.0,

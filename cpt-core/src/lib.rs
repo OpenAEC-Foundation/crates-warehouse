@@ -21,7 +21,7 @@ pub use domain::{Cpt, MeasurementPoint, Metadata, Position};
 pub use error::CptError;
 pub use ifc::{write_ifc4x3, write_ifcx};
 pub use layers::{detect_layers, Layer};
-pub use pdf::generate_single_cpt_pdf_bytes;
+pub use pdf::{generate_single_cpt_pdf_bytes, generate_single_cpt_pdf_bytes_with_sections};
 pub use plot::render_cpt_svg;
 pub use report::{build as build_report, build_with_sections, ProjectMeta, ReportSections};
 

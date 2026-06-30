@@ -293,7 +293,7 @@ fn overview_map_section(cpts: &[Cpt]) -> Section {
     }
 }
 
-fn overview_map_svg(cpts: &[Cpt]) -> String {
+pub(crate) fn overview_map_svg(cpts: &[Cpt]) -> String {
     let pts: Vec<(f64, f64, String)> = cpts
         .iter()
         .filter_map(|c| c.position.map(|p| (p.x_rd, p.y_rd, c.id.clone())))
@@ -396,7 +396,7 @@ fn sbt_legend_section() -> Section {
     }
 }
 
-fn sbt_legend_svg() -> String {
+pub(crate) fn sbt_legend_svg() -> String {
     let zones = crate::robertson::zones();
     let row_h = 46.0_f64;
     let w = 560.0_f64;

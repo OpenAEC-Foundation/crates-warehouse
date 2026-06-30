@@ -33,24 +33,70 @@ const DEEP_FORGE_TEXT: (f32, f32, f32) = (54.0 / 255.0, 54.0 / 255.0, 62.0 / 255
 const A4_W_MM: f32 = 210.0;
 const A4_H_MM: f32 = 297.0;
 
-/// Generate a PDF for a single CPT: branded cover, chart, back cover.
+/// Generate a PDF for a single CPT met de standaard-secties (gebrand
+/// voorblad → schermvullende grafiek → achterblad).
 pub fn generate_single_cpt_pdf_bytes(cpt: &Cpt, project: &ProjectMeta) -> Vec<u8> {
-    let png = render_cpt_png_with_meta(
+    generate_single_cpt_pdf_bytes_with_sections(
         cpt,
-        Some(&project.project_number),
-        Some(&project.client),
-    );
+        project,
+        crate::report::ReportSections::default(),
+    )
+}
 
-    let (doc, cover_page, cover_layer) = printpdf::PdfDocument::new(
+/// Als boven, maar met expliciete sectie-selectie. Het GEBRANDE rapport
+/// blijft het frame (voorblad + schermvullende grafiek + achterblad); de
+/// extra secties (coördinatentabel, overzichtskaart, SBT-legenda, metadata)
+/// worden als eigen pagina's ertussen geplaatst wanneer aangevinkt. Zo
+/// werken de vinkjes zonder dat de gebrande lay-out verloren gaat.
+pub fn generate_single_cpt_pdf_bytes_with_sections(
+    cpt: &Cpt,
+    project: &ProjectMeta,
+    sec: crate::report::ReportSections,
+) -> Vec<u8> {
+    #[derive(Clone, Copy)]
+    enum Pg {
+        Cover,
+        CoordTable,
+        Map,
+        Chart,
+        Legend,
+        Metadata,
+        Back,
+    }
+    let mut pages: Vec<Pg> = Vec::new();
+    if sec.cover {
+        pages.push(Pg::Cover);
+    }
+    if sec.coord_table {
+        pages.push(Pg::CoordTable);
+    }
+    if sec.map {
+        pages.push(Pg::Map);
+    }
+    if sec.per_cpt {
+        pages.push(Pg::Chart);
+    }
+    if sec.sbt_legend {
+        pages.push(Pg::Legend);
+    }
+    if sec.metadata {
+        pages.push(Pg::Metadata);
+    }
+    if sec.cover {
+        pages.push(Pg::Back);
+    }
+    if pages.is_empty() {
+        pages.push(Pg::Chart);
+    }
+
+    let png = render_cpt_png_with_meta(cpt, Some(&project.project_number), Some(&project.client));
+
+    let (doc, first_page, first_layer) = printpdf::PdfDocument::new(
         format!("Sondering {} — {}", cpt.id, project.title),
         Mm(A4_W_MM),
         Mm(A4_H_MM),
-        "Cover",
+        "Layer",
     );
-
-    // Built-in fonts — Helvetica/HelveticaBold approximate Inter/Space
-    // Grotesk closely enough for a portable, font-free PDF (no embedded
-    // TTF bytes, no licensing concerns).
     let font_bold = doc
         .add_builtin_font(BuiltinFont::HelveticaBold)
         .expect("HelveticaBold is always available");
@@ -58,16 +104,43 @@ pub fn generate_single_cpt_pdf_bytes(cpt: &Cpt, project: &ProjectMeta) -> Vec<u8
         .add_builtin_font(BuiltinFont::Helvetica)
         .expect("Helvetica is always available");
 
-    // ── 1. Cover page ──
-    render_cover_page(&doc, cover_page, &cover_layer, cpt, project, &font_bold, &font_regular);
-
-    // ── 2. Chart page ──
-    let (chart_page, chart_layer) = doc.add_page(Mm(A4_W_MM), Mm(A4_H_MM), "Chart");
-    render_chart_page(&doc, chart_page, &chart_layer, &png);
-
-    // ── 3. Back cover ──
-    let (back_page, back_layer) = doc.add_page(Mm(A4_W_MM), Mm(A4_H_MM), "BackCover");
-    render_back_cover(&doc, back_page, &back_layer, &font_bold, &font_regular);
+    for (i, pg) in pages.iter().enumerate() {
+        let (page, layer_id) = if i == 0 {
+            (first_page, first_layer)
+        } else {
+            doc.add_page(Mm(A4_W_MM), Mm(A4_H_MM), "Layer")
+        };
+        match pg {
+            Pg::Cover => {
+                render_cover_page(&doc, page, &layer_id, cpt, project, &font_bold, &font_regular)
+            }
+            Pg::Chart => render_chart_page(&doc, page, &layer_id, &png),
+            Pg::Back => render_back_cover(&doc, page, &layer_id, &font_bold, &font_regular),
+            Pg::Map => {
+                let svg = crate::report::overview_map_svg(std::slice::from_ref(cpt));
+                let img = crate::plot::rasterize_svg_to_png(&svg, 1400);
+                render_image_page(&doc, page, &layer_id, &font_bold, "Overzichtskaart", img.as_deref());
+            }
+            Pg::Legend => {
+                let svg = crate::report::sbt_legend_svg();
+                let img = crate::plot::rasterize_svg_to_png(&svg, 1000);
+                render_image_page(
+                    &doc,
+                    page,
+                    &layer_id,
+                    &font_bold,
+                    "Robertson SBT — grondsoort-legenda",
+                    img.as_deref(),
+                );
+            }
+            Pg::CoordTable => {
+                render_coord_table_page(&doc, page, &layer_id, cpt, &font_bold, &font_regular)
+            }
+            Pg::Metadata => {
+                render_metadata_page(&doc, page, &layer_id, cpt, &font_bold, &font_regular)
+            }
+        }
+    }
 
     doc.save_to_bytes().unwrap_or_default()
 }
@@ -593,4 +666,204 @@ fn draw_openaec_symbol(layer: &PdfLayerReference, cx_mm: f32, cy_mm: f32, size_m
         is_closed: false,
     };
     layer.add_line(notch);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Sectie-pagina's binnen het gebrande frame
+// ─────────────────────────────────────────────────────────────────────
+
+/// Pagina met een gecentreerde afbeelding (overzichtskaart / SBT-legenda)
+/// onder een gebrande titel + amber-streep.
+fn render_image_page(
+    doc: &PdfDocumentReference,
+    page: PdfPageIndex,
+    layer_id: &printpdf::PdfLayerIndex,
+    font_bold: &IndirectFontRef,
+    title: &str,
+    png: Option<&[u8]>,
+) {
+    let layer = doc.get_page(page).get_layer(*layer_id);
+    layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
+    layer.use_text(title, 20.0, Mm(20.0), Mm(A4_H_MM - 24.0), font_bold);
+    draw_amber_gradient_strip(&layer, 20.0, A4_H_MM - 30.0, 60.0, 1.6);
+
+    let png = match png {
+        Some(p) => p,
+        None => return,
+    };
+    let img = match ::image::load_from_memory(png) {
+        Ok(i) => i,
+        Err(_) => return,
+    };
+    let rgb_img = img.to_rgb8();
+    let (w, h) = (rgb_img.width() as usize, rgb_img.height() as usize);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let raw = rgb_img.into_raw();
+    let xobj = printpdf::ImageXObject {
+        width: Px(w),
+        height: Px(h),
+        color_space: printpdf::ColorSpace::Rgb,
+        bits_per_component: printpdf::ColorBits::Bit8,
+        interpolate: true,
+        image_data: raw,
+        image_filter: None,
+        smask: None,
+        clipping_bbox: None,
+    };
+    let pdf_image = printpdf::Image::from(xobj);
+    let max_w = 170.0_f32;
+    let max_h = 215.0_f32;
+    let aspect = h as f32 / w as f32;
+    let mut dw = max_w;
+    let mut dh = dw * aspect;
+    if dh > max_h {
+        dh = max_h;
+        dw = dh / aspect;
+    }
+    let tx = (A4_W_MM - dw) / 2.0;
+    let ty = (A4_H_MM - 42.0) - dh;
+    let transform = printpdf::ImageTransform {
+        translate_x: Some(Mm(tx)),
+        translate_y: Some(Mm(ty)),
+        scale_x: Some((dw * 72.0 / 25.4) / w as f32),
+        scale_y: Some((dh * 72.0 / 25.4) / h as f32),
+        dpi: Some(72.0),
+        ..Default::default()
+    };
+    pdf_image.add_to_layer(layer, transform);
+}
+
+/// Tabel-pagina onder een gebrande titel. `col_x` = linker-x (mm) per kolom.
+#[allow(clippy::too_many_arguments)]
+fn render_table_page(
+    doc: &PdfDocumentReference,
+    page: PdfPageIndex,
+    layer_id: &printpdf::PdfLayerIndex,
+    font_bold: &IndirectFontRef,
+    font_regular: &IndirectFontRef,
+    title: &str,
+    headers: &[&str],
+    col_x: &[f32],
+    rows: &[Vec<String>],
+) {
+    let layer = doc.get_page(page).get_layer(*layer_id);
+    layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
+    layer.use_text(title, 20.0, Mm(20.0), Mm(A4_H_MM - 24.0), font_bold);
+    draw_amber_gradient_strip(&layer, 20.0, A4_H_MM - 30.0, 60.0, 1.6);
+
+    let row_h = 9.0_f32;
+    let left = 18.0_f32;
+    let width = A4_W_MM - 2.0 * left;
+    let mut y = A4_H_MM - 48.0;
+
+    fill_rect(&layer, left, y - 6.0, width, row_h, DEEP_FORGE);
+    layer.set_fill_color(rgb(BLUEPRINT_WHITE));
+    for (i, hd) in headers.iter().enumerate() {
+        if i < col_x.len() {
+            layer.use_text(*hd, 9.0, Mm(col_x[i]), Mm(y - 3.5), font_bold);
+        }
+    }
+    y -= row_h;
+
+    for (ri, row) in rows.iter().enumerate() {
+        if ri % 2 == 1 {
+            fill_rect(&layer, left, y - 6.0, width, row_h, (0.96, 0.96, 0.955));
+        }
+        layer.set_fill_color(rgb(DEEP_FORGE_TEXT));
+        for (ci, cell) in row.iter().enumerate() {
+            if ci < col_x.len() {
+                layer.use_text(cell, 8.5, Mm(col_x[ci]), Mm(y - 3.5), font_regular);
+            }
+        }
+        y -= row_h;
+    }
+}
+
+fn cpt_end_depth(cpt: &Cpt) -> f64 {
+    cpt.points.iter().map(|p| p.depth).fold(0.0_f64, f64::max)
+}
+
+fn render_coord_table_page(
+    doc: &PdfDocumentReference,
+    page: PdfPageIndex,
+    layer_id: &printpdf::PdfLayerIndex,
+    cpt: &Cpt,
+    font_bold: &IndirectFontRef,
+    font_regular: &IndirectFontRef,
+) {
+    let (x, y) = match cpt.position {
+        Some(p) => (format!("{:.2}", p.x_rd), format!("{:.2}", p.y_rd)),
+        None => (String::new(), String::new()),
+    };
+    let z = cpt
+        .position
+        .and_then(|p| p.z_nap)
+        .or(cpt.metadata.ground_level_nap)
+        .map(|v| format!("{:.2}", v))
+        .unwrap_or_default();
+    let datum = cpt
+        .metadata
+        .date
+        .map(|d| d.format("%d-%m-%Y").to_string())
+        .unwrap_or_default();
+    let rows = vec![vec![
+        cpt.id.clone(),
+        x,
+        y,
+        z,
+        format!("{:.2}", cpt_end_depth(cpt)),
+        datum,
+    ]];
+    render_table_page(
+        doc,
+        page,
+        layer_id,
+        font_bold,
+        font_regular,
+        "Coordinatentabel",
+        &["Sondering", "X-RD [m]", "Y-RD [m]", "Z-NAP [m]", "Diepte tot [m]", "Datum"],
+        &[22.0, 55.0, 88.0, 120.0, 150.0, 178.0],
+        &rows,
+    );
+}
+
+fn render_metadata_page(
+    doc: &PdfDocumentReference,
+    page: PdfPageIndex,
+    layer_id: &printpdf::PdfLayerIndex,
+    cpt: &Cpt,
+    font_bold: &IndirectFontRef,
+    font_regular: &IndirectFontRef,
+) {
+    let mv = cpt
+        .metadata
+        .ground_level_nap
+        .map(|z| format!("{:.2}", z))
+        .unwrap_or_default();
+    let datum = cpt
+        .metadata
+        .date
+        .map(|d| d.format("%d-%m-%Y").to_string())
+        .unwrap_or_default();
+    let rows = vec![
+        vec!["Sondering".to_string(), cpt.id.clone()],
+        vec!["Project".to_string(), cpt.metadata.project_name.clone().unwrap_or_default()],
+        vec!["Apparatuur".to_string(), cpt.metadata.equipment.clone().unwrap_or_default()],
+        vec!["Maaiveld [m NAP]".to_string(), mv],
+        vec!["Datum".to_string(), datum],
+        vec!["Eindiepte [m]".to_string(), format!("{:.2}", cpt_end_depth(cpt))],
+    ];
+    render_table_page(
+        doc,
+        page,
+        layer_id,
+        font_bold,
+        font_regular,
+        "Metadata-overzicht",
+        &["Veld", "Waarde"],
+        &[22.0, 80.0],
+        &rows,
+    );
 }

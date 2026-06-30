@@ -984,7 +984,7 @@ pub fn render_cpt_png_with_meta(
     rasterize_svg_to_png(&svg, 1600).unwrap_or_default()
 }
 
-fn rasterize_svg_to_png(svg_str: &str, target_width_px: u32) -> Option<Vec<u8>> {
+pub(crate) fn rasterize_svg_to_png(svg_str: &str, target_width_px: u32) -> Option<Vec<u8>> {
     // Build options with a system-font database so text renders even when
     // the SVG asks for fonts (Inter) that may not exist on every machine —
     // resvg's `fontdb` will fall back to a sans-serif system font.

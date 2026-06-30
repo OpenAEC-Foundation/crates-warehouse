@@ -40,39 +40,82 @@ pub struct ProjectMeta {
 /// pages in the same order. SVG plots are embedded inline as base64 so the
 /// `openaec-engine` rasterizer (`resvg`) can pick them up without any
 /// file-system round-trip.
+/// Welke onderdelen het rapport bevat. Default = alles aan behalve de
+/// (optionele) SBT-legenda en metadata-bijlage. Wordt door de frontend
+/// (sectie-checkboxes) doorgegeven zodat aan/uit-zetten écht doorwerkt
+/// in de PDF.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ReportSections {
+    pub cover: bool,
+    pub coord_table: bool,
+    pub map: bool,
+    pub per_cpt: bool,
+    pub sbt_legend: bool,
+    pub metadata: bool,
+}
+
+impl Default for ReportSections {
+    fn default() -> Self {
+        Self {
+            cover: true,
+            coord_table: true,
+            map: true,
+            per_cpt: true,
+            sbt_legend: false,
+            metadata: false,
+        }
+    }
+}
+
+/// Backwards-compatibele wrapper — bouwt met alle standaard-secties.
 pub fn build(cpts: &[Cpt], project: &ProjectMeta) -> ReportData {
+    build_with_sections(cpts, project, ReportSections::default())
+}
+
+/// Bouw een [`ReportData`] met expliciete sectie-selectie. Elke ingeschakelde
+/// sectie wordt in vaste volgorde toegevoegd: voorblad → coördinatentabel →
+/// overzichtskaart → per-sondering → SBT-legenda → metadata.
+pub fn build_with_sections(
+    cpts: &[Cpt],
+    project: &ProjectMeta,
+    sec: ReportSections,
+) -> ReportData {
     let date_iso = project.date.format("%Y-%m-%d").to_string();
 
-    // Cover with subtitle = location, project metadata in extra_fields.
     let mut extra_fields = HashMap::new();
     extra_fields.insert("Opdrachtgever".to_string(), project.client.clone());
     extra_fields.insert("Locatie".to_string(), project.location.clone());
     extra_fields.insert("Projectnummer".to_string(), project.project_number.clone());
     extra_fields.insert("Datum".to_string(), date_iso.clone());
 
-    // If a single CPT is requested we skip the cover and coordinate table
-    // so the CPT plot is the *only* page — matching the reference layout.
-    // For multi-CPT builds we keep the existing cover + table for context.
-    let single = cpts.len() == 1;
-
-    let cover = if single { None } else {
+    let cover = if sec.cover {
         Some(Cover {
             subtitle: Some(project.location.clone()),
             image: None,
             extra_fields,
         })
+    } else {
+        None
     };
 
-    let mut sections: Vec<Section> = Vec::with_capacity(cpts.len() + 1);
-
-    // 1. Coordinate table section (only when more than one CPT)
-    if !single {
+    let mut sections: Vec<Section> = Vec::new();
+    if sec.coord_table {
         sections.push(coord_table_section(cpts));
     }
-
-    // 2. One page per CPT
-    for cpt in cpts {
-        sections.push(cpt_page_section(cpt, project));
+    if sec.map {
+        sections.push(overview_map_section(cpts));
+    }
+    if sec.per_cpt {
+        for cpt in cpts {
+            sections.push(cpt_page_section(cpt, project));
+        }
+    }
+    if sec.sbt_legend {
+        sections.push(sbt_legend_section());
+    }
+    if sec.metadata {
+        sections.push(metadata_section(cpts));
     }
 
     ReportData {
@@ -215,6 +258,239 @@ fn cpt_page_section(cpt: &Cpt, project: &ProjectMeta) -> Section {
 /// empty CPT — caller may use this defensively.
 fn cpt_max_depth(cpt: &Cpt) -> f64 {
     cpt.points.iter().map(|p| p.depth).fold(0.0_f64, f64::max)
+}
+
+// ─── Overzichtskaart (sondeerlocaties op RD-coördinaten) ─────────────
+
+/// Schematische overzichtskaart: alle sondeerlocaties op hun RD-coördinaten
+/// met label. Geen basemap-tegels (die vergen netwerk + compositie) — een
+/// schone, zelfstandige positie-plot die de onderlinge ligging toont,
+/// noord boven. Gerasteriseerd naar PNG en als afbeelding ingebed.
+fn overview_map_section(cpts: &[Cpt]) -> Section {
+    let svg = overview_map_svg(cpts);
+    let content = match crate::plot::rasterize_svg_to_png(&svg, 1400) {
+        Some(png) => ContentBlock::Image(ImageBlock {
+            src: ImageSource::Base64 {
+                data: base64_encode(&png),
+                media_type: MediaType::Png,
+                filename: Some("overzichtskaart.png".to_string()),
+            },
+            caption: Some("Overzicht sondeerlocaties (RD-coördinaten, noord boven)".to_string()),
+            width_mm: Some(150.0),
+            alignment: Alignment::Center,
+        }),
+        None => ContentBlock::Paragraph(ParagraphBlock {
+            text: "Geen locatiegegevens beschikbaar voor de overzichtskaart.".to_string(),
+            style: "Normal".to_string(),
+        }),
+    };
+    Section {
+        title: "Overzichtskaart".to_string(),
+        level: 1,
+        content: vec![content],
+        orientation: None,
+        page_break_before: true,
+    }
+}
+
+fn overview_map_svg(cpts: &[Cpt]) -> String {
+    let pts: Vec<(f64, f64, String)> = cpts
+        .iter()
+        .filter_map(|c| c.position.map(|p| (p.x_rd, p.y_rd, c.id.clone())))
+        .collect();
+
+    let w = 820.0_f64;
+    let h = 820.0_f64;
+    let m = 72.0_f64;
+
+    if pts.is_empty() {
+        return format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"140\" \
+             viewBox=\"0 0 {w} 140\"><text x=\"24\" y=\"72\" font-family=\"Arial\" \
+             font-size=\"18\" fill=\"#666\">Geen locatiegegevens beschikbaar voor de \
+             overzichtskaart.</text></svg>"
+        );
+    }
+
+    let xmin0 = pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let xmax0 = pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let ymin0 = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let ymax0 = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    let span = (xmax0 - xmin0).max(ymax0 - ymin0).max(10.0);
+    let cx = (xmin0 + xmax0) / 2.0;
+    let cy = (ymin0 + ymax0) / 2.0;
+    let xmin = cx - span * 0.6;
+    let xmax = cx + span * 0.6;
+    let ymin = cy - span * 0.6;
+    let ymax = cy + span * 0.6;
+
+    let sx = |x: f64| m + (x - xmin) / (xmax - xmin) * (w - 2.0 * m);
+    // y omkeren zodat noord (hoge Y-RD) bovenin staat.
+    let sy = |y: f64| h - m - (y - ymin) / (ymax - ymin) * (h - 2.0 * m);
+
+    let mut b = String::new();
+    let plot_w = w - 2.0 * m;
+    let plot_h = h - 2.0 * m;
+    b.push_str(&format!(
+        "<rect x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" fill=\"#fafaf9\" stroke=\"#999\" stroke-width=\"1\"/>"
+    ));
+    for i in 1..4 {
+        let gx = m + i as f64 * plot_w / 4.0;
+        let gy = m + i as f64 * plot_h / 4.0;
+        let y2 = h - m;
+        let x2 = w - m;
+        b.push_str(&format!("<line x1=\"{gx}\" y1=\"{m}\" x2=\"{gx}\" y2=\"{y2}\" stroke=\"#e7e5e4\"/>"));
+        b.push_str(&format!("<line x1=\"{m}\" y1=\"{gy}\" x2=\"{x2}\" y2=\"{gy}\" stroke=\"#e7e5e4\"/>"));
+    }
+    // Noord-pijl rechtsboven in het kader.
+    let nx = w - m - 22.0;
+    let ny = m + 30.0;
+    b.push_str(&format!(
+        "<g transform=\"translate({nx},{ny})\"><line x1=\"0\" y1=\"24\" x2=\"0\" y2=\"-10\" stroke=\"#333\" stroke-width=\"2\"/><polygon points=\"0,-17 -5,-6 5,-6\" fill=\"#333\"/><text x=\"0\" y=\"40\" font-family=\"Arial\" font-size=\"13\" fill=\"#333\" text-anchor=\"middle\">N</text></g>"
+    ));
+    for (x, y, id) in &pts {
+        let px = sx(*x);
+        let py = sy(*y);
+        let lx = px + 10.0;
+        let ly = py + 4.0;
+        let label = xml_escape(id);
+        b.push_str(&format!("<circle cx=\"{px}\" cy=\"{py}\" r=\"6\" fill=\"#D97706\" stroke=\"#7a3d00\" stroke-width=\"1.5\"/>"));
+        b.push_str(&format!("<text x=\"{lx}\" y=\"{ly}\" font-family=\"Arial\" font-size=\"13\" fill=\"#27272a\">{label}</text>"));
+    }
+    let ry = h - m + 24.0;
+    b.push_str(&format!(
+        "<text x=\"{m}\" y=\"{ry}\" font-family=\"Arial\" font-size=\"11\" fill=\"#777\">X-RD {xmin:.0}–{xmax:.0} m · Y-RD {ymin:.0}–{ymax:.0} m</text>"
+    ));
+
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><text x=\"{m}\" y=\"44\" font-family=\"Arial\" font-size=\"22\" font-weight=\"bold\" fill=\"#27272a\">Overzichtskaart sondeerlocaties</text>{b}</svg>"
+    )
+}
+
+// ─── Robertson SBT-legenda (9 grondsoort-zones) ──────────────────────
+
+fn sbt_legend_section() -> Section {
+    let svg = sbt_legend_svg();
+    let content = match crate::plot::rasterize_svg_to_png(&svg, 1000) {
+        Some(png) => ContentBlock::Image(ImageBlock {
+            src: ImageSource::Base64 {
+                data: base64_encode(&png),
+                media_type: MediaType::Png,
+                filename: Some("sbt-legenda.png".to_string()),
+            },
+            caption: Some("Robertson grondsoort-classificatie (SBT) — kleurcodering in de sondeer-grafieken".to_string()),
+            width_mm: Some(130.0),
+            alignment: Alignment::Center,
+        }),
+        None => ContentBlock::Paragraph(ParagraphBlock {
+            text: "SBT-legenda kon niet worden gerenderd.".to_string(),
+            style: "Normal".to_string(),
+        }),
+    };
+    Section {
+        title: "Robertson SBT — grondsoort-legenda".to_string(),
+        level: 1,
+        content: vec![content],
+        orientation: None,
+        page_break_before: true,
+    }
+}
+
+fn sbt_legend_svg() -> String {
+    let zones = crate::robertson::zones();
+    let row_h = 46.0_f64;
+    let w = 560.0_f64;
+    let top = 70.0_f64;
+    let h = top + zones.len() as f64 * row_h + 20.0;
+    let mut b = String::new();
+    b.push_str(&format!(
+        "<text x=\"24\" y=\"40\" font-family=\"Arial\" font-size=\"22\" font-weight=\"bold\" fill=\"#27272a\">Robertson SBT — grondsoort-zones</text>"
+    ));
+    for (i, z) in zones.iter().enumerate() {
+        let y = top + i as f64 * row_h;
+        let ty = y + 30.0;
+        let num = z.number;
+        let color = z.color;
+        let name = xml_escape(z.name);
+        b.push_str(&format!(
+            "<rect x=\"24\" y=\"{y}\" width=\"40\" height=\"40\" rx=\"5\" fill=\"{color}\" stroke=\"#666\" stroke-width=\"1\"/>"
+        ));
+        b.push_str(&format!(
+            "<text x=\"80\" y=\"{ty}\" font-family=\"Arial\" font-size=\"17\" fill=\"#27272a\"><tspan font-weight=\"bold\">Zone {num}</tspan>  —  {name}</text>"
+        ));
+    }
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">{b}</svg>"
+    )
+}
+
+// ─── Metadata-overzicht (tabel per sondering) ────────────────────────
+
+fn metadata_section(cpts: &[Cpt]) -> Section {
+    let headers = vec![
+        "Sondering".to_string(),
+        "Project".to_string(),
+        "Apparatuur".to_string(),
+        "Maaiveld [m NAP]".to_string(),
+        "Datum".to_string(),
+        "Eindiepte [m]".to_string(),
+    ];
+    let rows: Vec<Vec<Value>> = cpts
+        .iter()
+        .map(|cpt| {
+            let project = cpt.metadata.project_name.clone().unwrap_or_default();
+            let equip = cpt.metadata.equipment.clone().unwrap_or_default();
+            let mv = cpt
+                .metadata
+                .ground_level_nap
+                .map(|z| format!("{:.2}", z))
+                .unwrap_or_default();
+            let datum = cpt
+                .metadata
+                .date
+                .map(|d| d.format("%d-%m-%Y").to_string())
+                .unwrap_or_default();
+            let depth = fmt_depth(cpt_max_depth(cpt));
+            vec![
+                Value::from(cpt.id.clone()),
+                Value::from(project),
+                Value::from(equip),
+                Value::from(mv),
+                Value::from(datum),
+                depth,
+            ]
+        })
+        .collect();
+
+    let table = TableBlock {
+        title: Some("Metadata per sondering".to_string()),
+        headers,
+        rows,
+        column_widths: None,
+        style: TableStyle::Striped,
+    };
+
+    Section {
+        title: "Metadata-overzicht".to_string(),
+        level: 1,
+        content: vec![
+            ContentBlock::Paragraph(ParagraphBlock {
+                text: "Herkomst en kalibratie-context van iedere sondering in dit rapport."
+                    .to_string(),
+                style: "Normal".to_string(),
+            }),
+            ContentBlock::Table(table),
+        ],
+        orientation: None,
+        page_break_before: true,
+    }
+}
+
+/// Minimale XML/SVG-escape voor labels (sondering-id's, grondsoort-namen).
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Format an RD coordinate as a fixed two-decimal string (e.g. "132782.52").

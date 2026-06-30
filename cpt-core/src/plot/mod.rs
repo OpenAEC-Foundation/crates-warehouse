@@ -128,7 +128,7 @@ pub fn render_cpt_svg_with_meta(
     let u2_points = curve_points_clamped(cpt, &u2_axis, &z_axis, |p| p.u2, z0, 0.0, U2_MAX);
 
     // Annotation under the plot area when any measured fs / Rf exceeds the cap.
-    let overflow_note = build_overflow_note(cpt, plot_x, plot_y, plot_h);
+    let overflow_note = build_overflow_note(cpt, plot_x, plot_y, plot_w);
 
     // ── Grid ─────────────────────────────────────────────────────────────
     let grid = build_grid(plot_x, plot_y, plot_w, plot_h, z_top, z_bot, &qc_axis);
@@ -323,22 +323,18 @@ where
 /// SVG `<text>` just under the plot area noting the peaks + depths.
 /// Bescheiden: max één regel, niet vetgedrukt. Returns "" when nothing
 /// overflows so the SVG stays unchanged in the common case.
-fn build_overflow_note(cpt: &Cpt, plot_x: f64, plot_y: f64, plot_h: f64) -> String {
+fn build_overflow_note(cpt: &Cpt, plot_x: f64, plot_y: f64, plot_w: f64) -> String {
     let mut fs_peak: Option<(f64, f64)> = None; // (value, depth)
     let mut rf_peak: Option<(f64, f64)> = None;
     for p in &cpt.points {
         if let Some(v) = p.fs {
-            if v > FS_MAX {
-                if fs_peak.map(|(prev, _)| v > prev).unwrap_or(true) {
-                    fs_peak = Some((v, p.depth));
-                }
+            if v > FS_MAX && fs_peak.map(|(prev, _)| v > prev).unwrap_or(true) {
+                fs_peak = Some((v, p.depth));
             }
         }
         if let Some(v) = p.rf {
-            if v > RF_MAX {
-                if rf_peak.map(|(prev, _)| v > prev).unwrap_or(true) {
-                    rf_peak = Some((v, p.depth));
-                }
+            if v > RF_MAX && rf_peak.map(|(prev, _)| v > prev).unwrap_or(true) {
+                rf_peak = Some((v, p.depth));
             }
         }
     }
@@ -353,11 +349,20 @@ fn build_overflow_note(cpt: &Cpt, plot_x: f64, plot_y: f64, plot_h: f64) -> Stri
         parts.push(format!("Rf piek {:.1} % @ {:.2} m (boven schaal)", v, d));
     }
     let text = parts.join("   |   ");
-    // Position: 9 pt below the plot bottom, left-aligned with the plot.
-    let y = plot_y + plot_h + 9.0;
+    // Plaats de notitie BINNEN het plot-kader, net onder de bovenrand, met
+    // een wit semi-transparant kadertje zodat hij leesbaar blijft over de
+    // grid/curves. Vroeger stond hij ONDER het plot (plot_y+plot_h+9) en
+    // liep dan dwars door het titelblok (OPDRACHT NR / SONDEERMEESTER) —
+    // dat oogde rommelig. Bovenin (niet onderin) zodat hij de kritische
+    // diepe qc-piek niet afdekt.
+    let est_w = ((text.chars().count() as f64) * 3.35 + 8.0).min(plot_w - 2.0);
+    let y = plot_y + 9.0;
     format!(
-        r##"<text x="{x:.1}" y="{y:.1}" font-family="Arial, sans-serif" font-size="6.5" fill="#555">{text}</text>"##,
-        x = plot_x,
+        r##"<rect x="{rx:.1}" y="{ry:.1}" width="{w:.1}" height="9.6" rx="1.5" fill="#FFFFFF" fill-opacity="0.85"/><text x="{tx:.1}" y="{y:.1}" font-family="Arial, sans-serif" font-size="6.5" fill="#555">{text}</text>"##,
+        rx = plot_x + 1.0,
+        ry = plot_y + 1.6,
+        w = est_w,
+        tx = plot_x + 4.0,
     )
 }
 

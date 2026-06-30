@@ -68,18 +68,37 @@ impl Default for ReportSections {
     }
 }
 
+/// Basiskaart-afbeelding (PDOK-luchtfoto) + de RD-bounding-box waarvoor hij is
+/// opgehaald. cpt-core heeft géén netwerk; de app haalt de kaart op en geeft
+/// 'm hier mee. De overzichtskaart legt de sondeerlocaties exact op deze bbox.
+/// Ontbreekt de kaart (offline / geen posities), dan valt de overzichtskaart
+/// terug op een kaal RD-raster.
+#[derive(Debug, Clone)]
+pub struct OverviewBasemap {
+    /// Ruwe afbeeldingsbytes (JPEG of PNG).
+    pub image_bytes: Vec<u8>,
+    /// MIME-type van `image_bytes`, bv. "image/jpeg".
+    pub mime: String,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_min: f64,
+    pub y_max: f64,
+}
+
 /// Backwards-compatibele wrapper — bouwt met alle standaard-secties.
 pub fn build(cpts: &[Cpt], project: &ProjectMeta) -> ReportData {
-    build_with_sections(cpts, project, ReportSections::default())
+    build_with_sections(cpts, project, ReportSections::default(), None)
 }
 
 /// Bouw een [`ReportData`] met expliciete sectie-selectie. Elke ingeschakelde
 /// sectie wordt in vaste volgorde toegevoegd: voorblad → coördinatentabel →
-/// overzichtskaart → per-sondering → SBT-legenda → metadata.
+/// overzichtskaart → per-sondering → SBT-legenda → metadata. `basemap` (mag
+/// `None` zijn) levert de echte luchtfoto-achtergrond voor de overzichtskaart.
 pub fn build_with_sections(
     cpts: &[Cpt],
     project: &ProjectMeta,
     sec: ReportSections,
+    basemap: Option<&OverviewBasemap>,
 ) -> ReportData {
     let date_iso = project.date.format("%Y-%m-%d").to_string();
 
@@ -104,7 +123,7 @@ pub fn build_with_sections(
         sections.push(coord_table_section(cpts));
     }
     if sec.map {
-        sections.push(overview_map_section(cpts));
+        sections.push(overview_map_section(cpts, basemap));
     }
     if sec.per_cpt {
         for cpt in cpts {
@@ -266,8 +285,8 @@ fn cpt_max_depth(cpt: &Cpt) -> f64 {
 /// met label. Geen basemap-tegels (die vergen netwerk + compositie) — een
 /// schone, zelfstandige positie-plot die de onderlinge ligging toont,
 /// noord boven. Gerasteriseerd naar PNG en als afbeelding ingebed.
-fn overview_map_section(cpts: &[Cpt]) -> Section {
-    let svg = overview_map_svg(cpts);
+fn overview_map_section(cpts: &[Cpt], basemap: Option<&OverviewBasemap>) -> Section {
+    let svg = overview_map_svg(cpts, basemap);
     let content = match crate::plot::rasterize_svg_to_png(&svg, 1400) {
         Some(png) => ContentBlock::Image(ImageBlock {
             src: ImageSource::Base64 {
@@ -293,7 +312,9 @@ fn overview_map_section(cpts: &[Cpt]) -> Section {
     }
 }
 
-pub(crate) fn overview_map_svg(cpts: &[Cpt]) -> String {
+pub(crate) fn overview_map_svg(cpts: &[Cpt], basemap: Option<&OverviewBasemap>) -> String {
+    use base64::Engine as _;
+
     let pts: Vec<(f64, f64, String)> = cpts
         .iter()
         .filter_map(|c| c.position.map(|p| (p.x_rd, p.y_rd, c.id.clone())))
@@ -312,41 +333,62 @@ pub(crate) fn overview_map_svg(cpts: &[Cpt]) -> String {
         );
     }
 
-    let xmin0 = pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
-    let xmax0 = pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
-    let ymin0 = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
-    let ymax0 = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-    let span = (xmax0 - xmin0).max(ymax0 - ymin0).max(10.0);
-    let cx = (xmin0 + xmax0) / 2.0;
-    let cy = (ymin0 + ymax0) / 2.0;
-    let xmin = cx - span * 0.6;
-    let xmax = cx + span * 0.6;
-    let ymin = cy - span * 0.6;
-    let ymax = cy + span * 0.6;
-
-    let sx = |x: f64| m + (x - xmin) / (xmax - xmin) * (w - 2.0 * m);
-    // y omkeren zodat noord (hoge Y-RD) bovenin staat.
-    let sy = |y: f64| h - m - (y - ymin) / (ymax - ymin) * (h - 2.0 * m);
-
-    let mut b = String::new();
     let plot_w = w - 2.0 * m;
     let plot_h = h - 2.0 * m;
-    b.push_str(&format!(
-        "<rect x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" fill=\"#fafaf9\" stroke=\"#999\" stroke-width=\"1\"/>"
-    ));
-    for i in 1..4 {
-        let gx = m + i as f64 * plot_w / 4.0;
-        let gy = m + i as f64 * plot_h / 4.0;
-        let y2 = h - m;
-        let x2 = w - m;
-        b.push_str(&format!("<line x1=\"{gx}\" y1=\"{m}\" x2=\"{gx}\" y2=\"{y2}\" stroke=\"#e7e5e4\"/>"));
-        b.push_str(&format!("<line x1=\"{m}\" y1=\"{gy}\" x2=\"{x2}\" y2=\"{gy}\" stroke=\"#e7e5e4\"/>"));
+
+    // Bounding-box. Mét basiskaart: exact die van de opgehaalde luchtfoto
+    // (zo liggen de stippen op de juiste pixel). Zonder: een vierkante box
+    // rond de posities met marge (kaal RD-raster als fallback).
+    let (xmin, xmax, ymin, ymax) = if let Some(bm) = basemap {
+        (bm.x_min, bm.x_max, bm.y_min, bm.y_max)
+    } else {
+        let xmin0 = pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let xmax0 = pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        let ymin0 = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let ymax0 = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        let span = (xmax0 - xmin0).max(ymax0 - ymin0).max(10.0);
+        let cx = (xmin0 + xmax0) / 2.0;
+        let cy = (ymin0 + ymax0) / 2.0;
+        (cx - span * 0.6, cx + span * 0.6, cy - span * 0.6, cy + span * 0.6)
+    };
+
+    let sx = |x: f64| m + (x - xmin) / (xmax - xmin) * plot_w;
+    // y omkeren zodat noord (hoge Y-RD) bovenin staat.
+    let sy = |y: f64| h - m - (y - ymin) / (ymax - ymin) * plot_h;
+
+    let mut b = String::new();
+    if let Some(bm) = basemap {
+        // Echte basiskaart (PDOK-luchtfoto) als achtergrond, exact passend op
+        // het plot-kader. preserveAspectRatio="none" mag want de bbox is al
+        // vierkant gekozen (zie de app-side fetch). Plus een dun kader.
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bm.image_bytes);
+        b.push_str(&format!(
+            "<image x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" preserveAspectRatio=\"none\" href=\"data:{mime};base64,{b64}\"/>",
+            mime = bm.mime,
+        ));
+        b.push_str(&format!(
+            "<rect x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" fill=\"none\" stroke=\"#444\" stroke-width=\"1.2\"/>"
+        ));
+    } else {
+        // Geen basiskaart → kaal RD-raster (offline-fallback).
+        b.push_str(&format!(
+            "<rect x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" fill=\"#fafaf9\" stroke=\"#999\" stroke-width=\"1\"/>"
+        ));
+        for i in 1..4 {
+            let gx = m + i as f64 * plot_w / 4.0;
+            let gy = m + i as f64 * plot_h / 4.0;
+            let y2 = h - m;
+            let x2 = w - m;
+            b.push_str(&format!("<line x1=\"{gx}\" y1=\"{m}\" x2=\"{gx}\" y2=\"{y2}\" stroke=\"#e7e5e4\"/>"));
+            b.push_str(&format!("<line x1=\"{m}\" y1=\"{gy}\" x2=\"{x2}\" y2=\"{gy}\" stroke=\"#e7e5e4\"/>"));
+        }
     }
-    // Noord-pijl rechtsboven in het kader.
+    // Noord-pijl rechtsboven, met een wit halo-rondje zodat hij ook op een
+    // donkere luchtfoto leesbaar blijft.
     let nx = w - m - 22.0;
     let ny = m + 30.0;
     b.push_str(&format!(
-        "<g transform=\"translate({nx},{ny})\"><line x1=\"0\" y1=\"24\" x2=\"0\" y2=\"-10\" stroke=\"#333\" stroke-width=\"2\"/><polygon points=\"0,-17 -5,-6 5,-6\" fill=\"#333\"/><text x=\"0\" y=\"40\" font-family=\"Arial\" font-size=\"13\" fill=\"#333\" text-anchor=\"middle\">N</text></g>"
+        "<g transform=\"translate({nx},{ny})\"><circle cx=\"0\" cy=\"8\" r=\"26\" fill=\"#FFFFFF\" fill-opacity=\"0.72\"/><line x1=\"0\" y1=\"24\" x2=\"0\" y2=\"-10\" stroke=\"#333\" stroke-width=\"2\"/><polygon points=\"0,-17 -5,-6 5,-6\" fill=\"#333\"/><text x=\"0\" y=\"40\" font-family=\"Arial\" font-size=\"13\" fill=\"#333\" text-anchor=\"middle\">N</text></g>"
     ));
     for (x, y, id) in &pts {
         let px = sx(*x);
@@ -354,8 +396,11 @@ pub(crate) fn overview_map_svg(cpts: &[Cpt]) -> String {
         let lx = px + 10.0;
         let ly = py + 4.0;
         let label = xml_escape(id);
-        b.push_str(&format!("<circle cx=\"{px}\" cy=\"{py}\" r=\"6\" fill=\"#D97706\" stroke=\"#7a3d00\" stroke-width=\"1.5\"/>"));
-        b.push_str(&format!("<text x=\"{lx}\" y=\"{ly}\" font-family=\"Arial\" font-size=\"13\" fill=\"#27272a\">{label}</text>"));
+        // Witte rand om de stip + wit halo achter het label, zodat beide
+        // scherp afsteken tegen de luchtfoto.
+        b.push_str(&format!("<circle cx=\"{px}\" cy=\"{py}\" r=\"6.5\" fill=\"#D97706\" stroke=\"#FFFFFF\" stroke-width=\"2.2\"/>"));
+        b.push_str(&format!("<text x=\"{lx}\" y=\"{ly}\" font-family=\"Arial\" font-size=\"13\" font-weight=\"bold\" fill=\"#FFFFFF\" stroke=\"#FFFFFF\" stroke-width=\"3.2\" paint-order=\"stroke\">{label}</text>"));
+        b.push_str(&format!("<text x=\"{lx}\" y=\"{ly}\" font-family=\"Arial\" font-size=\"13\" font-weight=\"bold\" fill=\"#27272a\">{label}</text>"));
     }
     let ry = h - m + 24.0;
     b.push_str(&format!(

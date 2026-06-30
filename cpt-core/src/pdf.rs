@@ -40,6 +40,7 @@ pub fn generate_single_cpt_pdf_bytes(cpt: &Cpt, project: &ProjectMeta) -> Vec<u8
         cpt,
         project,
         crate::report::ReportSections::default(),
+        None,
     )
 }
 
@@ -52,6 +53,7 @@ pub fn generate_single_cpt_pdf_bytes_with_sections(
     cpt: &Cpt,
     project: &ProjectMeta,
     sec: crate::report::ReportSections,
+    basemap: Option<&crate::report::OverviewBasemap>,
 ) -> Vec<u8> {
     #[derive(Clone, Copy)]
     enum Pg {
@@ -117,7 +119,7 @@ pub fn generate_single_cpt_pdf_bytes_with_sections(
             Pg::Chart => render_chart_page(&doc, page, &layer_id, &png),
             Pg::Back => render_back_cover(&doc, page, &layer_id, &font_bold, &font_regular),
             Pg::Map => {
-                let svg = crate::report::overview_map_svg(std::slice::from_ref(cpt));
+                let svg = crate::report::overview_map_svg(std::slice::from_ref(cpt), basemap);
                 let img = crate::plot::rasterize_svg_to_png(&svg, 1400);
                 render_image_page(&doc, page, &layer_id, &font_bold, "Overzichtskaart", img.as_deref());
             }

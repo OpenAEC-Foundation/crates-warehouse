@@ -363,7 +363,7 @@ pub(crate) fn overview_map_svg(cpts: &[Cpt]) -> String {
     ));
 
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><text x=\"{m}\" y=\"44\" font-family=\"Arial\" font-size=\"22\" font-weight=\"bold\" fill=\"#27272a\">Overzichtskaart sondeerlocaties</text>{b}</svg>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" fill=\"#FFFFFF\"/><text x=\"{m}\" y=\"44\" font-family=\"Arial\" font-size=\"22\" font-weight=\"bold\" fill=\"#27272a\">Overzichtskaart sondeerlocaties</text>{b}</svg>"
     )
 }
 
@@ -420,7 +420,7 @@ pub(crate) fn sbt_legend_svg() -> String {
         ));
     }
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">{b}</svg>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\"><rect x=\"0\" y=\"0\" width=\"{w}\" height=\"{h}\" fill=\"#FFFFFF\"/>{b}</svg>"
     )
 }
 

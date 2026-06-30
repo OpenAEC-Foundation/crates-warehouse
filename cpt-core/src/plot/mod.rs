@@ -27,7 +27,7 @@ const QC_TICKS: &[u32] = &[1, 5, 10, 15, 20, 25, 30];
 /// de chart area verlaat, en een annotation notes the true peak
 /// underneath. Cap verhoogd van 0.02 → 0.05 op gebruiker-verzoek:
 /// 0.02 hakte teveel weg in zandige lagen waar fs vaak 0.03-0.04 zit.
-const FS_MAX: f64 = 0.05;
+const FS_MAX: f64 = 0.25;
 
 /// Hard cap for the Rf (Wrijvingsgetal) axis, %. Same rationale as
 /// `FS_MAX` — anything above is clamped + reported in the annotation.
@@ -236,8 +236,8 @@ pub fn render_cpt_svg_with_meta(
 {hatch}
 {mv}
 <g clip-path="url(#plotClip)">
-<polyline points="{fs_points}" fill="none" stroke="#D02828" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" />
-<polyline points="{qc_points}" fill="none" stroke="#1F4FA8" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" />
+<polyline points="{fs_points}" fill="none" stroke="#D02828" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" />
+<polyline points="{qc_points}" fill="none" stroke="#1F4FA8" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" />
 <polyline points="{u2_points}" fill="none" stroke="#06B6D4" stroke-width="0.5"  stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="2 1.5" />
 <polyline points="{rf_points}" fill="none" stroke="#000000" stroke-width="0.4"  stroke-linejoin="round" stroke-linecap="round" />
 </g>
@@ -546,10 +546,10 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     let scale = qc_visible_w / w;            // tick-positie-schaal
     let fs_mask_threshold = scale - 0.005;
 
-    // fs ticks: vier evenredig verdeeld over 0..FS_MAX (= 0.05).
-    // 0.01 / 0.02 / 0.03 / 0.04 — twee-decimalen format omdat de
-    // mPa-waardes nu groter zijn dan toen de cap nog 0.02 was.
-    let fs_tick_values: [f64; 4] = [0.01, 0.02, 0.03, 0.04];
+    // fs ticks: nette ronde 0,05-stappen over 0..FS_MAX (= 0,25 MPa),
+    // conform de Nederlandse referentie-schaalstok (0 · 0,05 · 0,10 ·
+    // 0,15 · 0,20 · 0,25). 0,00 valt samen met de qc-0 dus die laten we weg.
+    let fs_tick_values: [f64; 5] = [0.05, 0.10, 0.15, 0.20, 0.25];
     let fs_ticks: Vec<(f64, String)> = fs_tick_values
         .iter()
         .map(|v| ((v / FS_MAX) * scale, format!("{:.2}", v)))

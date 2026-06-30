@@ -382,6 +382,14 @@ pub(crate) fn overview_map_svg(cpts: &[Cpt], basemap: Option<&OverviewBasemap>) 
             b.push_str(&format!("<line x1=\"{gx}\" y1=\"{m}\" x2=\"{gx}\" y2=\"{y2}\" stroke=\"#e7e5e4\"/>"));
             b.push_str(&format!("<line x1=\"{m}\" y1=\"{gy}\" x2=\"{x2}\" y2=\"{gy}\" stroke=\"#e7e5e4\"/>"));
         }
+        // Duidelijke melding waarom er geen luchtfoto staat — anders oogt het
+        // kale raster als een 'kapotte' lege kaart. (De sondering hééft een
+        // positie, maar de PDOK-luchtfoto kon niet worden opgehaald.)
+        b.push_str(&format!(
+            "<text x=\"{tx:.0}\" y=\"{ty:.0}\" font-family=\"Arial\" font-size=\"13\" fill=\"#999\" text-anchor=\"middle\">Luchtfoto niet opgehaald (offline of PDOK onbereikbaar) — RD-raster getoond</text>",
+            tx = m + plot_w / 2.0,
+            ty = m + plot_h / 2.0,
+        ));
     }
     // Noord-pijl rechtsboven, met een wit halo-rondje zodat hij ook op een
     // donkere luchtfoto leesbaar blijft.

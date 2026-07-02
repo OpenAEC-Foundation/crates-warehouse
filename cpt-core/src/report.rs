@@ -79,6 +79,12 @@ pub struct OverviewBasemap {
     pub image_bytes: Vec<u8>,
     /// MIME-type van `image_bytes`, bv. "image/jpeg".
     pub mime: String,
+    /// Optionele tweede kaartlaag bovenop de (halftone) luchtfoto — in de
+    /// praktijk de PDOK kadastrale kaart (percelen + bebouwing) als PNG met
+    /// transparante achtergrond, opgehaald voor exact dezelfde bbox.
+    pub overlay_bytes: Option<Vec<u8>>,
+    /// MIME-type van `overlay_bytes`, bv. "image/png".
+    pub overlay_mime: Option<String>,
     pub x_min: f64,
     pub x_max: f64,
     pub y_min: f64,
@@ -352,20 +358,39 @@ pub(crate) fn overview_map_svg(cpts: &[Cpt], basemap: Option<&OverviewBasemap>) 
         (cx - span * 0.6, cx + span * 0.6, cy - span * 0.6, cy + span * 0.6)
     };
 
-    let sx = |x: f64| m + (x - xmin) / (xmax - xmin) * plot_w;
+    // Degeneratie-guard: een bbox met nul-breedte/hoogte (alleen bereikbaar
+    // voor library-callers die zelf een OverviewBasemap construeren) zou
+    // NaN-coördinaten opleveren waardoor resvg alle markers stilletjes
+    // wegdropt. Clamp op minimaal 1 m zodat de projectie eindig blijft.
+    let span_x = (xmax - xmin).max(1.0);
+    let span_y = (ymax - ymin).max(1.0);
+    let sx = |x: f64| m + (x - xmin) / span_x * plot_w;
     // y omkeren zodat noord (hoge Y-RD) bovenin staat.
-    let sy = |y: f64| h - m - (y - ymin) / (ymax - ymin) * plot_h;
+    let sy = |y: f64| h - m - (y - ymin) / span_y * plot_h;
 
     let mut b = String::new();
     if let Some(bm) = basemap {
-        // Echte basiskaart (PDOK-luchtfoto) als achtergrond, exact passend op
-        // het plot-kader. preserveAspectRatio="none" mag want de bbox is al
-        // vierkant gekozen (zie de app-side fetch). Plus een dun kader.
+        // Basiskaart-compositie, exact passend op het plot-kader:
+        //   1. PDOK-luchtfoto op volle sterkte
+        //   2. wit halftone-scherm (55%) zodat de foto terugtreedt
+        //   3. kadastrale kaart (percelen + bebouwing, transparante PNG)
+        //      er bovenop — de donkere lijnen lezen scherp op de vervaagde foto
+        // preserveAspectRatio="none" mag want de bbox is al vierkant gekozen
+        // (zie de app-side fetch). Plus een dun kader.
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bm.image_bytes);
         b.push_str(&format!(
             "<image x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" preserveAspectRatio=\"none\" href=\"data:{mime};base64,{b64}\"/>",
             mime = bm.mime,
         ));
+        if let (Some(ov), Some(ov_mime)) = (&bm.overlay_bytes, &bm.overlay_mime) {
+            b.push_str(&format!(
+                "<rect x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" fill=\"#FFFFFF\" fill-opacity=\"0.55\"/>"
+            ));
+            let ov64 = base64::engine::general_purpose::STANDARD.encode(ov);
+            b.push_str(&format!(
+                "<image x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" preserveAspectRatio=\"none\" href=\"data:{ov_mime};base64,{ov64}\"/>",
+            ));
+        }
         b.push_str(&format!(
             "<rect x=\"{m}\" y=\"{m}\" width=\"{plot_w}\" height=\"{plot_h}\" fill=\"none\" stroke=\"#444\" stroke-width=\"1.2\"/>"
         ));
@@ -383,10 +408,12 @@ pub(crate) fn overview_map_svg(cpts: &[Cpt], basemap: Option<&OverviewBasemap>) 
             b.push_str(&format!("<line x1=\"{m}\" y1=\"{gy}\" x2=\"{x2}\" y2=\"{gy}\" stroke=\"#e7e5e4\"/>"));
         }
         // Duidelijke melding waarom er geen luchtfoto staat — anders oogt het
-        // kale raster als een 'kapotte' lege kaart. (De sondering hééft een
-        // positie, maar de PDOK-luchtfoto kon niet worden opgehaald.)
+        // kale raster als een 'kapotte' lege kaart. Bewust neutraal
+        // geformuleerd: cpt-core weet niet OF er een fetch geprobeerd is
+        // (library-callers geven gewoon `None` door zonder ooit te fetchen),
+        // dus een 'offline/PDOK onbereikbaar'-diagnose zou daar onterecht zijn.
         b.push_str(&format!(
-            "<text x=\"{tx:.0}\" y=\"{ty:.0}\" font-family=\"Arial\" font-size=\"13\" fill=\"#999\" text-anchor=\"middle\">Luchtfoto niet opgehaald (offline of PDOK onbereikbaar) — RD-raster getoond</text>",
+            "<text x=\"{tx:.0}\" y=\"{ty:.0}\" font-family=\"Arial\" font-size=\"13\" fill=\"#999\" text-anchor=\"middle\">Geen luchtfoto-achtergrond beschikbaar — RD-raster getoond</text>",
             tx = m + plot_w / 2.0,
             ty = m + plot_h / 2.0,
         ));

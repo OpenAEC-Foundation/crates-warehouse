@@ -21,13 +21,17 @@ const H: f64 = 841.0;
 /// `build_header` (labels) so the labels sit *on* the gridlines.
 const QC_TICKS: &[u32] = &[1, 5, 10, 15, 20, 25, 30];
 
-/// Hard cap for the fs (Plaatselijke wrijving) axis, MPa. De Dutch
-/// reference plot prints fs op een smalle schaal; values above this
-/// cap are clamped to the cap before drawing zodat de polyline nooit
-/// de chart area verlaat, en een annotation notes the true peak
-/// underneath. Cap verhoogd van 0.02 → 0.05 op gebruiker-verzoek:
-/// 0.02 hakte teveel weg in zandige lagen waar fs vaak 0.03-0.04 zit.
+/// Hard cap for the fs (Plaatselijke wrijving) axis, MPa. Waarden boven
+/// de cap worden geclampt vóór het tekenen zodat de polyline nooit de
+/// chart area verlaat; een annotatie in de plot meldt de echte piek.
+/// Schaalstok conform de Nederlandse referentie: 0 · 0,05 · … · 0,25.
 const FS_MAX: f64 = 0.25;
+
+/// De fs-as eindigt op de qc = 10 MPa-gridlijn: fractie 10/30 van de
+/// qc-breedte (qc loopt 0..30). Gedeeld door de main render, de
+/// schaalstok in build_header en de regressietest — één plek, zodat een
+/// wijziging niet de lijn en zijn eigen tickcijfers uit elkaar trekt.
+pub(crate) const FS_AXIS_QC_FRACTION: f64 = 10.0 / 30.0;
 
 /// Hard cap for the Rf (Wrijvingsgetal) axis, %. Same rationale as
 /// `FS_MAX` — anything above is clamped + reported in the annotation.
@@ -105,7 +109,7 @@ pub fn render_cpt_svg_with_meta(
     // fs = FS_MAX landt exact op de qc = 10 MPa positie (= 1/3 van de qc-as,
     // want qc loopt 0..30). Waarden boven FS_MAX worden geclampt, dus de
     // rode lijn komt nooit voorbij de 10 MPa-gridlijn.
-    let fs_axis_end = plot_x + (sbt_x - SBT_GAP - plot_x) * (10.0 / 30.0);
+    let fs_axis_end = plot_x + (sbt_x - SBT_GAP - plot_x) * FS_AXIS_QC_FRACTION;
     let fs_axis = LinearAxis { min: 0.0,    max: FS_MAX, px_start: plot_x,     px_end: fs_axis_end };
     let rf_axis = LinearAxis { min: RF_MAX, max: 0.0,    px_start: rf_band_x0, px_end: rf_band_x0 + rf_band_w };
     // u2-axis: zelfde x-range als qc, eigen schaal (0..U2_MAX MPa) zodat
@@ -286,7 +290,7 @@ where F: Fn(&crate::domain::MeasurementPoint) -> Option<f64>
 }
 
 /// Same as `curve_points` but clamps each data value into `[lo, hi]`
-/// before projecting. The user-visible chart range is fixed (fs 0-0.02,
+/// before projecting. The user-visible chart range is fixed (fs 0-FS_MAX,
 /// Rf 0-10), so any measurement above the cap is pinned to the cap
 /// and the polyline sits exactly on the chart edge instead of leaving
 /// the plot area. The true peak is reported separately via
@@ -349,20 +353,25 @@ fn build_overflow_note(cpt: &Cpt, plot_x: f64, plot_y: f64, plot_w: f64) -> Stri
         parts.push(format!("Rf piek {:.1} % @ {:.2} m (boven schaal)", v, d));
     }
     let text = parts.join("   |   ");
-    // Plaats de notitie BINNEN het plot-kader, net onder de bovenrand, met
-    // een wit semi-transparant kadertje zodat hij leesbaar blijft over de
-    // grid/curves. Vroeger stond hij ONDER het plot (plot_y+plot_h+9) en
-    // liep dan dwars door het titelblok (OPDRACHT NR / SONDEERMEESTER) —
-    // dat oogde rommelig. Bovenin (niet onderin) zodat hij de kritische
-    // diepe qc-piek niet afdekt.
+    // Plaats de notitie BINNEN het plot-kader, RECHTS uitgelijnd net vóór
+    // de Rf-band. Linksboven zat hij óp de maaiveld-arcering en de eerste
+    // halve meter van de curves (en Rf > 10% — de trigger — is juist in
+    // veenprofielen routine); rechtsboven ligt het qc-bereik 15-25 MPa in
+    // de bovenste decimeters, waar in de praktijk nooit data staat. Onder
+    // het plot kon hij niet: daar staat het titelblok.
     let est_w = ((text.chars().count() as f64) * 3.35 + 8.0).min(plot_w - 2.0);
+    // Rechterkant van de qc/fs-zone = de scheidslijn vóór de Rf-band
+    // (zelfde afleiding als mask_x in de main render / build_header).
+    let sbt_x = plot_x + plot_w - 10.0;
+    let rf_band_x0 = (sbt_x - 2.0) - plot_w * 0.20;
+    let right_edge = rf_band_x0 - 4.0;
     let y = plot_y + 9.0;
     format!(
-        r##"<rect x="{rx:.1}" y="{ry:.1}" width="{w:.1}" height="9.6" rx="1.5" fill="#FFFFFF" fill-opacity="0.85"/><text x="{tx:.1}" y="{y:.1}" font-family="Arial, sans-serif" font-size="6.5" fill="#555">{text}</text>"##,
-        rx = plot_x + 1.0,
+        r##"<rect x="{rx:.1}" y="{ry:.1}" width="{w:.1}" height="9.6" rx="1.5" fill="#FFFFFF" fill-opacity="0.85"/><text x="{tx:.1}" y="{y:.1}" font-family="Arial, sans-serif" font-size="6.5" fill="#555" text-anchor="end">{text}</text>"##,
+        rx = right_edge - est_w,
         ry = plot_y + 1.6,
         w = est_w,
-        tx = plot_x + 4.0,
+        tx = right_edge - 3.0,
     )
 }
 
@@ -549,23 +558,22 @@ fn build_header(x: f64, y: f64, w: f64, h: f64) -> String {
     let mask_x = rf_band_x - HEADER_GAP;
     let qc_visible_w = qc_axis_end - x;      // = qc_axis breedte in main
 
-    // De fs-as loopt 0 → FS_MAX (0.02 MPa) over de qc_visible_w.
-    // Een fs-tick met norm. positie `tv` (= v/FS_MAX) zit op
+    // De fs-as loopt 0 → FS_MAX over het linkerdeel van de qc_visible_w
+    // (tot de 10 MPa-lijn). Een fs-tick met norm. positie `tv` zit op
     // `x + tv * qc_visible_w`. Daarna schalen we mee in render_axis_row
     // door tv te delen door (w/qc_visible_w) zodat label-x = x + tv_eff*w.
     let scale = qc_visible_w / w;            // tick-positie-schaal
-    let fs_mask_threshold = scale - 0.005;
 
     // fs ticks: nette ronde 0,05-stappen over 0..FS_MAX (= 0,25 MPa),
     // conform de Nederlandse referentie-schaalstok (0 · 0,05 · 0,10 ·
     // 0,15 · 0,20 · 0,25). 0,00 valt samen met de qc-0 dus die laten we weg.
+    // De schaalstok loopt mee met de fs-as die op de 10 MPa-lijn eindigt
+    // (gedeelde FS_AXIS_QC_FRACTION); een mask-filter is daardoor niet
+    // meer nodig — de verste tick (0,25) ligt per definitie op 1/3.
     let fs_tick_values: [f64; 5] = [0.05, 0.10, 0.15, 0.20, 0.25];
-    // fs-schaalstok loopt mee met de fs-as die nu eindigt op de 10 MPa-lijn
-    // (= 1/3 van de qc-breedte); daarom de extra factor 10/30.
     let fs_ticks: Vec<(f64, String)> = fs_tick_values
         .iter()
-        .map(|v| ((v / FS_MAX) * (10.0 / 30.0) * scale, format!("{:.2}", v)))
-        .filter(|(tv, _)| *tv <= fs_mask_threshold)
+        .map(|v| ((v / FS_MAX) * FS_AXIS_QC_FRACTION * scale, format!("{:.2}", v)))
         .collect();
     // qc ticks gecorrigeerd zodat ze EXACT op de verticale grid-lijnen
     // landen (grid wordt op qc_axis.project(v) getekend, label hier op
@@ -841,13 +849,17 @@ fn build_footer(
         BORDER_M, fy0, BORDER_M + BORDER_W, fy0
     ));
 
-    // Left column rows
+    // Left column rows. GEF-afgeleide strings worden ge-escaped: een '&'
+    // in bv. de opdrachtgever ("Jansen & Zonen") maakte de SVG anders
+    // ongeldige XML, waarna resvg's parse faalde en de HELE chartpagina
+    // stilletjes blanco rendere (rasterize → None → lege PNG).
+    use crate::write::xml_escape as esc;
     let left_rows: [(&str, String); 5] = [
-        ("OPDRACHT NR", format!(": {}", opdracht_nr)),
-        ("SONDERING",   format!(": {}", sondering)),
-        ("DATUM",       format!(": {}     TIJD   : {}", date_str, time_str)),
-        ("OPDRACHTGEVER", format!(": {}", opdrachtgever)),
-        ("OMSCHRIJVING", format!(": {}", omschrijving)),
+        ("OPDRACHT NR", format!(": {}", esc(&opdracht_nr))),
+        ("SONDERING",   format!(": {}", esc(&sondering))),
+        ("DATUM",       format!(": {}     TIJD   : {}", esc(&date_str), esc(&time_str))),
+        ("OPDRACHTGEVER", format!(": {}", esc(&opdrachtgever))),
+        ("OMSCHRIJVING", format!(": {}", esc(&omschrijving))),
     ];
     for (label, value) in &left_rows {
         s.push_str(&format!(
@@ -867,10 +879,10 @@ fn build_footer(
     let mut y = fy0 + 12.0;
     let right_rows: [(&str, String); 5] = [
         ("SONDEERMEESTER", String::from(":")),
-        ("REFERENTIE NIVO", format!(": {}", referentie_nivo)),
-        ("CONUS TYPE", format!(": {}     Nr.: {}", conus_type, conus_serial)),
-        ("HELLINGOPNEMER", format!(": {}", hellingopnemer)),
-        ("EINDWAARDE HELLING", format!(": {}", einde_helling)),
+        ("REFERENTIE NIVO", format!(": {}", esc(&referentie_nivo))),
+        ("CONUS TYPE", format!(": {}     Nr.: {}", esc(&conus_type), esc(&conus_serial))),
+        ("HELLINGOPNEMER", format!(": {}", esc(&hellingopnemer))),
+        ("EINDWAARDE HELLING", format!(": {}", esc(&einde_helling))),
     ];
     for (label, value) in &right_rows {
         s.push_str(&format!(
@@ -894,11 +906,13 @@ fn build_footer(
     // Bottom company line — pulled from CPT metadata, with sensible fallbacks.
     // Order: typed `equipment` (← #COMPANYID for GEF), then BRO `Bronhouder`
     // extra, then GEF #COMPANYID extra (in case the typed field is empty).
-    let company = m.equipment.clone()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| extras.get("COMPANYID").cloned())
-        .or_else(|| extras.get("Bronhouder").cloned())
-        .unwrap_or_else(|| String::from("Onbekende contractor"));
+    let company = esc(
+        &m.equipment.clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| extras.get("COMPANYID").cloned())
+            .or_else(|| extras.get("Bronhouder").cloned())
+            .unwrap_or_else(|| String::from("Onbekende contractor")),
+    );
     let company_y = H - BORDER_M - 6.0;
     s.push_str(&format!(
         r##"<text x="{cx:.1}" y="{y:.1}" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#000">{company}</text>"##,
@@ -1009,11 +1023,21 @@ pub(crate) fn rasterize_svg_to_png(svg_str: &str, target_width_px: u32) -> Optio
     // Build options with a system-font database so text renders even when
     // the SVG asks for fonts (Inter) that may not exist on every machine —
     // resvg's `fontdb` will fall back to a sans-serif system font.
+    //
+    // De fontdb wordt éénmalig per proces geladen (OnceLock): een volledige
+    // system-font-scan kost ~100-300 ms en een rapport met alle secties
+    // rasterizet 3 SVG's (chart + kaart + legenda) — zonder cache waren dat
+    // 3 volledige scans per preview-regeneratie.
+    static FONTDB: std::sync::OnceLock<std::sync::Arc<resvg::usvg::fontdb::Database>> =
+        std::sync::OnceLock::new();
+    let fontdb = FONTDB.get_or_init(|| {
+        let mut db = resvg::usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        db.set_sans_serif_family("Arial");
+        std::sync::Arc::new(db)
+    });
     let mut opt = resvg::usvg::Options::default();
-    let mut fontdb = resvg::usvg::fontdb::Database::new();
-    fontdb.load_system_fonts();
-    fontdb.set_sans_serif_family("Arial");
-    opt.fontdb = std::sync::Arc::new(fontdb);
+    opt.fontdb = fontdb.clone();
     let tree = resvg::usvg::Tree::from_str(svg_str, &opt).ok()?;
     let size = tree.size();
     let scale = target_width_px as f32 / size.width();
@@ -1118,7 +1142,7 @@ mod tests {
         // (= sbt_x - SBT_GAP) lag op 545; de fs-as eindigt nu op de
         // 10 MPa-positie = plot_x + (545 - plot_x) * 10/30 = 223.
         // De geclampte fs-lijn mag die x niet voorbij.
-        let fs_axis_px_end = 62.0 + (545.0 - 62.0) * (10.0 / 30.0); // = 223.0
+        let fs_axis_px_end = 62.0 + (545.0 - 62.0) * FS_AXIS_QC_FRACTION; // = 223.0
         let tolerance = 0.5_f64; // round-off
         for (x, _y) in &fs_poly {
             assert!(

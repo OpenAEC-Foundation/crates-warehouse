@@ -323,7 +323,10 @@ fn bro_void() -> String {
     "-999999".to_string()
 }
 
-fn xml_escape(s: &str) -> String {
+/// Escape voor XML/SVG-tekstinhoud — gedeeld door write.rs, report.rs en
+/// plot (chart-footer): één implementatie zodat een aanscherping (bv. ook
+/// aanhalingstekens escapen voor attributen) overal tegelijk landt.
+pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

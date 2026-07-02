@@ -91,7 +91,15 @@ pub fn generate_single_cpt_pdf_bytes_with_sections(
         pages.push(Pg::Chart);
     }
 
-    let png = render_cpt_png_with_meta(cpt, Some(&project.project_number), Some(&project.client));
+    // Chart-PNG alleen renderen als er daadwerkelijk een chart-pagina komt —
+    // de 1600px-rasterisatie is verreweg de duurste stap; met alleen
+    // coördinatentabel/metadata aangevinkt werd hij eerst weggegooid.
+    let needs_chart = pages.iter().any(|p| matches!(p, Pg::Chart));
+    let png = if needs_chart {
+        render_cpt_png_with_meta(cpt, Some(&project.project_number), Some(&project.client))
+    } else {
+        Vec::new()
+    };
 
     let (doc, first_page, first_layer) = printpdf::PdfDocument::new(
         format!("Sondering {} — {}", cpt.id, project.title),

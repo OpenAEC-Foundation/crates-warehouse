@@ -567,11 +567,9 @@ fn metadata_section(cpts: &[Cpt]) -> Section {
 }
 
 /// Minimale XML/SVG-escape voor labels (sondering-id's, grondsoort-namen).
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
+// Gedeelde escape-implementatie — zie write.rs (was hier een byte-voor-
+// byte duplicaat; één plek voorkomt dat een aanscherping de ander mist).
+use crate::write::xml_escape;
 
 /// Format an RD coordinate as a fixed two-decimal string (e.g. "132782.52").
 /// Emitting a string instead of a JSON number keeps trailing zeros (serde

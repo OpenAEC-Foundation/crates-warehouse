@@ -459,7 +459,7 @@ fn render_back_cover(
     // Centred OpenAEC monogram — minimal hexagonal block in amber strokes.
     // We draw a stylised 3D cube outline by hand (no embedded SVG path),
     // matching the brandbook "isometric open building block" symbol.
-    draw_openaec_symbol(&layer, A4_W_MM / 2.0, A4_H_MM / 2.0 + 25.0, 18.0);
+    draw_openaec_symbol(&layer, A4_W_MM / 2.0, A4_H_MM / 2.0 + 30.0, 18.0);
 
     // Wordmark "Open Geotechniek Studio" in Space Grotesk Bold 24pt (Helvetica
     // stand-in), centred under the symbol in white.
@@ -599,75 +599,88 @@ fn estimate_text_width(text: &str, font_size_pt: f32, bold: bool) -> f32 {
 /// architecture mark from the brandbook. Centred at (cx_mm, cy_mm),
 /// `size_mm` is the half-edge length.
 fn draw_openaec_symbol(layer: &PdfLayerReference, cx_mm: f32, cy_mm: f32, size_mm: f32) {
+    // Correct isometrisch "open bouwblok" (2:1 dimetrie).
+    // De oude versie verbond de zijvlakken met een niet-bestaand
+    // "bot_back"-punt op TOP-hoogte, waardoor het symbool als een
+    // scheve tent met kruisende lijnen rendere — vandaar de herbouw.
+    //
+    // Geometrie: bovenvlak = ruit met halve breedte `s` en halve hoogte
+    // `h = s/2`; de drie zichtbare onderhoeken liggen exact `d` lager.
     let s = size_mm;
-    // Cube vertices (8) in isometric projection. The "open" face is the
-    // front-bottom — we draw the top, left, and right faces as outlines.
+    let h = s * 0.5;
+    let d = s * 0.9; // bloklengte omlaag — iets gedrongen, zoals het merk
+    // Verticaal centreren rond de aangevraagde cy: het blok loopt 0.5s
+    // omhoog en 1.4s omlaag vanaf de ruit-oorsprong, dus 0.45s omhoog
+    // schuiven maakt boven- en onderkant symmetrisch rond cy_mm.
+    let cy_mm = cy_mm + s * 0.45;
 
-    // 4 top-face vertices (rhombus)
-    let top_back  = (cx_mm,        cy_mm + s * 0.95);
-    let top_left  = (cx_mm - s,    cy_mm + s * 0.45);
-    let top_right = (cx_mm + s,    cy_mm + s * 0.45);
-    let top_front = (cx_mm,        cy_mm + s * -0.05);
+    // Bovenvlak-ruit.
+    let t_back  = (cx_mm,     cy_mm + h);
+    let t_left  = (cx_mm - s, cy_mm);
+    let t_right = (cx_mm + s, cy_mm);
+    let t_front = (cx_mm,     cy_mm - h);
+    // Onderhoeken (zelfde x, exact d lager).
+    let b_left  = (t_left.0,  t_left.1 - d);
+    let b_right = (t_right.0, t_right.1 - d);
+    let b_front = (t_front.0, t_front.1 - d);
 
-    // 4 bottom-face vertices (also a rhombus, shifted down)
-    let bot_back  = (cx_mm,        cy_mm + s * 0.45);
-    let bot_left  = (cx_mm - s,    cy_mm - s * 0.50);
-    let bot_right = (cx_mm + s,    cy_mm - s * 0.50);
+    // Vlaktinten: printpdf 0.7 kent geen alpha, dus we mengen amber vooraf
+    // met de DEEP_FORGE-achtergrond. Boven het lichtst, links donkerder,
+    // rechts ertussenin — dat geeft de 3D-diepte.
+    let blend = |t: f32| -> (f32, f32, f32) {
+        (
+            DEEP_FORGE.0 + (AMBER.0 - DEEP_FORGE.0) * t,
+            DEEP_FORGE.1 + (AMBER.1 - DEEP_FORGE.1) * t,
+            DEEP_FORGE.2 + (AMBER.2 - DEEP_FORGE.2) * t,
+        )
+    };
+    let quad = |pts: [(f32, f32); 4], fill: Option<(f32, f32, f32)>| Polygon {
+        rings: vec![pts
+            .iter()
+            .map(|p| (Point::new(Mm(p.0), Mm(p.1)), false))
+            .collect()],
+        mode: if fill.is_some() {
+            printpdf::path::PaintMode::FillStroke
+        } else {
+            printpdf::path::PaintMode::Stroke
+        },
+        winding_order: printpdf::path::WindingOrder::NonZero,
+    };
 
     layer.set_outline_color(rgb(AMBER));
-    layer.set_outline_thickness(2.5);
+    layer.set_outline_thickness(1.6);
 
-    // Top face (filled with amber 15% — fake with a near-transparent
-    // amber via solid mid-tone since printpdf 0.7 has no rgba).
-    layer.set_fill_color(rgb((220.0 / 255.0, 160.0 / 255.0, 70.0 / 255.0)));
-    let top_face = Polygon {
-        rings: vec![vec![
-            (Point::new(Mm(top_back.0), Mm(top_back.1)), false),
-            (Point::new(Mm(top_left.0), Mm(top_left.1)), false),
-            (Point::new(Mm(top_front.0), Mm(top_front.1)), false),
-            (Point::new(Mm(top_right.0), Mm(top_right.1)), false),
-        ]],
-        mode: printpdf::path::PaintMode::FillStroke,
-        winding_order: printpdf::path::WindingOrder::NonZero,
-    };
-    layer.add_polygon(top_face);
+    // Linkervlak (donkerste tint).
+    layer.set_fill_color(rgb(blend(0.18)));
+    layer.add_polygon(quad([t_left, t_front, b_front, b_left], Some(blend(0.18))));
+    // Rechtervlak (middentint).
+    layer.set_fill_color(rgb(blend(0.34)));
+    layer.add_polygon(quad([t_right, t_front, b_front, b_right], Some(blend(0.34))));
+    // Bovenvlak (lichtste tint) als laatste zodat zijn randen bovenop liggen.
+    layer.set_fill_color(rgb(blend(0.55)));
+    layer.add_polygon(quad([t_back, t_left, t_front, t_right], Some(blend(0.55))));
 
-    // Left face — outline only, faintly tinted.
-    let left_face = Polygon {
-        rings: vec![vec![
-            (Point::new(Mm(top_left.0), Mm(top_left.1)), false),
-            (Point::new(Mm(bot_left.0), Mm(bot_left.1)), false),
-            (Point::new(Mm(bot_back.0), Mm(bot_back.1)), false),
-            (Point::new(Mm(top_front.0), Mm(top_front.1)), false),
-        ]],
-        mode: printpdf::path::PaintMode::Stroke,
-        winding_order: printpdf::path::WindingOrder::NonZero,
-    };
-    layer.add_polygon(left_face);
-
-    // Right face — outline only.
-    let right_face = Polygon {
-        rings: vec![vec![
-            (Point::new(Mm(top_right.0), Mm(top_right.1)), false),
-            (Point::new(Mm(bot_right.0), Mm(bot_right.1)), false),
-            (Point::new(Mm(bot_back.0), Mm(bot_back.1)), false),
-            (Point::new(Mm(top_front.0), Mm(top_front.1)), false),
-        ]],
-        mode: printpdf::path::PaintMode::Stroke,
-        winding_order: printpdf::path::WindingOrder::NonZero,
-    };
-    layer.add_polygon(right_face);
-
-    // A small horizontal "open" notch line to signal the missing front
-    // face (the visible cut-out at bottom front of the cube).
-    let notch = Line {
+    // "Open" merkgebaar: de voorste verticale ribbe is bewust onderbroken —
+    // alleen het bovenste en onderste kwart zijn getekend, het midden staat
+    // open. Warm gold zodat de seam net oplicht t.o.v. de amber randen.
+    layer.set_outline_color(rgb(WARM_GOLD));
+    layer.set_outline_thickness(1.6);
+    let seam_top = Line {
         points: vec![
-            (Point::new(Mm(bot_left.0 + s * 0.4), Mm(bot_left.1 + s * 0.15)), false),
-            (Point::new(Mm(bot_right.0 - s * 0.4), Mm(bot_right.1 + s * 0.15)), false),
+            (Point::new(Mm(t_front.0), Mm(t_front.1)), false),
+            (Point::new(Mm(t_front.0), Mm(t_front.1 - d * 0.25)), false),
         ],
         is_closed: false,
     };
-    layer.add_line(notch);
+    let seam_bottom = Line {
+        points: vec![
+            (Point::new(Mm(b_front.0), Mm(b_front.1 + d * 0.25)), false),
+            (Point::new(Mm(b_front.0), Mm(b_front.1)), false),
+        ],
+        is_closed: false,
+    };
+    layer.add_line(seam_top);
+    layer.add_line(seam_bottom);
 }
 
 // ─────────────────────────────────────────────────────────────────────

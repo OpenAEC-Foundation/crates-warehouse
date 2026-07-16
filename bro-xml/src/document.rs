@@ -1,15 +1,17 @@
 use quick_xml::{events::Event, name::ResolveResult, reader::NsReader};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::BroError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BroDocumentType {
     Cpt,
     BhrGt,
     BhrG,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaVersion {
     pub major: u16,
     pub minor: u16,
@@ -32,10 +34,58 @@ pub struct ParseOptions {
     pub retain_source: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
+    pub crs: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerticalPosition {
+    pub offset: f64,
+    pub datum: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommonMetadata {
+    pub bro_id: String,
+    pub schema_version: SchemaVersion,
+    pub quality_regime: Option<String>,
+    pub accountable_party: Option<String>,
+    pub registration_time: Option<chrono::NaiveDate>,
+    pub research_start_date: Option<chrono::NaiveDate>,
+    pub research_end_date: Option<chrono::NaiveDate>,
+    pub position: Option<Position>,
+    pub vertical_position: Option<VerticalPosition>,
+    pub extensions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum BroDocument {
+    Cpt(crate::CptDocument),
+    BhrGt(crate::BhrGtDocument),
+    BhrG(crate::BhrGDocument),
+}
+
+pub fn parse(xml: &str) -> Result<BroDocument, BroError> {
+    parse_with_options(xml, ParseOptions::default())
+}
+
+pub fn parse_with_options(xml: &str, options: ParseOptions) -> Result<BroDocument, BroError> {
+    match detect(xml)?.document_type {
+        BroDocumentType::Cpt => crate::cpt::parse(xml, options).map(BroDocument::Cpt),
+        BroDocumentType::BhrGt => crate::bhr_gt::parse(xml, options).map(BroDocument::BhrGt),
+        BroDocumentType::BhrG => crate::bhr_g::parse(xml, options).map(BroDocument::BhrG),
+    }
+}
+
 pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
     let mut reader = NsReader::from_str(xml);
     let mut root = None;
     let mut detected = None;
+    let mut schema_error = None;
 
     loop {
         match reader.read_resolved_event() {
@@ -56,18 +106,20 @@ pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
                     ResolveResult::Unbound => String::new(),
                     ResolveResult::Unknown(prefix) => String::from_utf8_lossy(&prefix).into_owned(),
                 };
-                let version = parse_version(&namespace, namespace_family).ok_or_else(|| {
-                    BroError::UnsupportedSchema {
+                let Some(version) = parse_version(&namespace, namespace_family) else {
+                    schema_error = Some(BroError::UnsupportedSchema {
                         document: document_type,
                         version: namespace.clone(),
-                    }
-                })?;
+                    });
+                    continue;
+                };
 
                 if version != supported_version {
-                    return Err(BroError::UnsupportedSchema {
+                    schema_error = Some(BroError::UnsupportedSchema {
                         document: document_type,
                         version: format!("{}.{}", version.major, version.minor),
                     });
+                    continue;
                 }
 
                 detected = Some(DetectedDocument {
@@ -76,9 +128,13 @@ pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
                 });
             }
             Ok((_, Event::Eof)) => {
-                return detected.ok_or_else(|| BroError::UnsupportedDocument {
-                    root: root.unwrap_or_default(),
-                });
+                return match (detected, schema_error) {
+                    (_, Some(error)) => Err(error),
+                    (Some(detected), None) => Ok(detected),
+                    (None, None) => Err(BroError::UnsupportedDocument {
+                        root: root.unwrap_or_default(),
+                    }),
+                };
             }
             Ok(_) => {}
             Err(error) => {

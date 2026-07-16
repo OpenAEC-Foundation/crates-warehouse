@@ -1,2 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<CPT_O xmlns="http://www.broservices.nl/xsd/dscpt/1.1" />
+<CPT_O xmlns="http://www.broservices.nl/xsd/dscpt/1.1"
+       xmlns:gml="http://www.opengis.net/gml/3.2">
+  <broId>CPT000000000001</broId>
+  <deliveredLocation>
+    <location>
+      <gml:Point srsName="EPSG:28992">
+        <gml:pos>155000.0 463000.0</gml:pos>
+      </gml:Point>
+    </location>
+  </deliveredLocation>
+</CPT_O>

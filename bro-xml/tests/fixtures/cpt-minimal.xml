@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CPT_O xmlns="http://www.broservices.nl/xsd/dscpt/1.1"
-       xmlns:gml="http://www.opengis.net/gml/3.2">
+       xmlns:gml="http://www.opengis.net/gml/3.2"
+       xmlns:swe="http://www.opengis.net/swe/2.0">
   <broId>CPT000000000001</broId>
   <deliveredLocation>
     <location>
@@ -9,4 +10,19 @@
       </gml:Point>
     </location>
   </deliveredLocation>
+  <conePenetrationTest>
+    <finalDepth>2.0</finalDepth>
+    <conePenetrometer>
+      <coneType>electrical</coneType>
+    </conePenetrometer>
+    <result>
+      <swe:DataArray>
+        <swe:elementCount><swe:Count><swe:value>2</swe:value></swe:Count></swe:elementCount>
+        <swe:encoding>
+          <swe:TextEncoding blockSeparator=";" tokenSeparator="," decimalSeparator="." />
+        </swe:encoding>
+        <swe:values>2.0,2.0,0.0,5.1,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,0.2,-999999,-999999,0.1,-999999,-999999,-999999,-999999,-999999,2.0;1.0,1.0,0.0,4.2,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,-999999,0.1,-999999,-999999,0.08,-999999,-999999,-999999,NaN,-999999,1.9</swe:values>
+      </swe:DataArray>
+    </result>
+  </conePenetrationTest>
 </CPT_O>

@@ -97,11 +97,9 @@ fn scalar_diagnostics_use_collected_paths() {
 #[test]
 fn extension_limit_counts_characters_instead_of_bytes() {
     let value = "é".repeat(199);
-    let xml = format!(
-        r#"<CPT_O xmlns="http://www.broservices.nl/xsd/dscpt/1.1">
-            <broId>CPT000000000001</broId>
-            <customValue>{value}</customValue>
-        </CPT_O>"#
+    let xml = include_str!("fixtures/cpt-minimal.xml").replace(
+        "</CPT_O>",
+        &format!("<customValue>{value}</customValue></CPT_O>"),
     );
 
     let document = parse(&xml).unwrap();

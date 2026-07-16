@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "bro-xml",
     "cpt-core",
+    "open-geotechniek-kernel",
     "tools/bro-reference-codegen",
     "isso51-api",
     "isso51-core",

@@ -125,12 +125,38 @@ fn typed_bore(value: &serde_json::Value) -> Option<GeotechnicalObject> {
     let options = bro_xml::ParseOptions {
         retain_source: true,
     };
-    let object = match bro_xml::parse_with_options(source, options).ok()? {
+    let mut object = match bro_xml::parse_with_options(source, options).ok()? {
         bro_xml::BroDocument::BhrGt(document) => Some(GeotechnicalObject::BhrGt(document)),
         bro_xml::BroDocument::BhrG(document) => Some(GeotechnicalObject::BhrG(document)),
         bro_xml::BroDocument::Cpt(_) => None,
     }?;
-    (object.id() == wrapper_id).then_some(object)
+    if object.id() != wrapper_id {
+        return None;
+    }
+    if let Some(extensions) = saved_common_extensions(value) {
+        match &mut object {
+            GeotechnicalObject::BhrGt(document) => document.common.extensions.extend(extensions),
+            GeotechnicalObject::BhrG(document) => document.common.extensions.extend(extensions),
+            GeotechnicalObject::Cpt(_) => unreachable!(),
+        }
+    }
+    Some(object)
+}
+
+fn saved_common_extensions(
+    value: &serde_json::Value,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let extensions = value
+        .get("metadata")?
+        .get("common")?
+        .get("extensions")?
+        .as_object()?;
+    Some(
+        extensions
+            .iter()
+            .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
+            .collect(),
+    )
 }
 
 fn typed_bore_json(object: &GeotechnicalObject) -> Option<serde_json::Value> {

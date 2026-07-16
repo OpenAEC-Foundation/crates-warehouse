@@ -33,6 +33,31 @@ fn imports_bro_cpt_into_existing_cpt_domain() {
 }
 
 #[test]
+fn imports_bhr_with_source_filename_in_common_extensions() {
+    let mut project = GeotechnicalProject::new(ProjectMetadata::default());
+    let object = project
+        .import_bro(
+            include_str!("fixtures/bhr-gt-minimal.xml"),
+            "field-bore.xml",
+        )
+        .unwrap();
+    let GeotechnicalObject::BhrGt(document) = object else {
+        panic!("expected BHR-GT")
+    };
+    assert_eq!(
+        document.common.extensions.get("openGeo/sourceFile"),
+        Some(&"field-bore.xml".to_owned())
+    );
+    let GeotechnicalObject::BhrGt(stored) = project.get("BHR000000000001").unwrap() else {
+        panic!("expected stored BHR-GT")
+    };
+    assert_eq!(
+        stored.common.extensions.get("openGeo/sourceFile"),
+        Some(&"field-bore.xml".to_owned())
+    );
+}
+
+#[test]
 fn preserves_non_rd_coordinates_without_typed_rd_position() {
     let mut project = GeotechnicalProject::new(ProjectMetadata::default());
     let object = project

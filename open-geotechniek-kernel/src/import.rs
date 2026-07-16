@@ -5,8 +5,20 @@ pub(crate) fn parse_bro(xml: &str, source_file: &str) -> Result<GeotechnicalObje
         retain_source: true,
     };
     match bro_xml::parse_with_options(xml, options)? {
-        bro_xml::BroDocument::BhrGt(document) => Ok(GeotechnicalObject::BhrGt(document)),
-        bro_xml::BroDocument::BhrG(document) => Ok(GeotechnicalObject::BhrG(document)),
+        bro_xml::BroDocument::BhrGt(mut document) => {
+            document
+                .common
+                .extensions
+                .insert("openGeo/sourceFile".to_owned(), source_file.to_owned());
+            Ok(GeotechnicalObject::BhrGt(document))
+        }
+        bro_xml::BroDocument::BhrG(mut document) => {
+            document
+                .common
+                .extensions
+                .insert("openGeo/sourceFile".to_owned(), source_file.to_owned());
+            Ok(GeotechnicalObject::BhrG(document))
+        }
         bro_xml::BroDocument::Cpt(document) => Ok(GeotechnicalObject::Cpt(crate::cpt::from_bro(
             document,
             source_file,

@@ -79,6 +79,26 @@ fn direct_bhr_gt_import_remains_typed_after_project_round_trip() {
 }
 
 #[test]
+fn typed_bore_round_trip_preserves_stored_common_extensions() {
+    let mut project = GeotechnicalProject::new(ProjectMetadata::default());
+    let xml = include_str!("fixtures/bhr-gt-minimal.xml");
+    project.import_bro(xml, "bhr-gt.xml").unwrap();
+    let mut file = project.to_project_file().unwrap();
+    file.bores[0]["metadata"]["common"]["extensions"]["openGeo/sourceFile"] =
+        serde_json::json!("field-bore.xml");
+    let reopened = GeotechnicalProject::load_project_file(file).unwrap();
+    match reopened.get("BHR000000000001").unwrap() {
+        open_geotechniek_kernel::GeotechnicalObject::BhrGt(document) => {
+            assert_eq!(
+                document.common.extensions.get("openGeo/sourceFile"),
+                Some(&"field-bore.xml".to_owned())
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn direct_bhr_g_import_remains_typed_after_project_round_trip() {
     let mut project = GeotechnicalProject::new(ProjectMetadata::default());
     let xml = include_str!("fixtures/bhr-g-minimal.xml");

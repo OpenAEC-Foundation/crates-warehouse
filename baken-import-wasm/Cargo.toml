@@ -1,0 +1,17 @@
+[package]
+name = "baken-import-wasm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Browser-bindings (WASM) voor de Baken-importers"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+klic2geo = { path = "../klic2geo" }
+plan2geo = { path = "../plan2geo" }
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

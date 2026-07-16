@@ -16,7 +16,23 @@ zodat ze hergebruikt kunnen worden in andere OpenAEC projecten.
 | 1 | ISSO 51:2023 warmteverlies | 3 |
 | 2 | NTA 8800 energieprestatie | 14 |
 | 3 | Gedeeld (cross-norm) | 1 |
-|   | **Totaal** | **18** |
+| 4 | Baken — GIS-import (K&L) | 4 |
+|   | **Totaal** | **22** |
+
+---
+
+## Baken — GIS-import kabels & leidingen (4 crates)
+
+Import-familie van het Baken-platform (Van Dorp Infra): zet Nederlandse
+kabel- en leidingdata om naar het gedeelde **Baken GeoJSON-profiel v1**
+(RD/EPSG:28992). Draait als CLI én als WebAssembly in de browser.
+
+| Crate | Beschrijving |
+|-------|--------------|
+| [`baken-geo`](baken-geo/) | Het Baken GeoJSON-profiel v1: envelop (schema, laagtype, project, bron, samenvatting), feature-bouwer (kern-properties + `bron`-object) en RD-helpers. |
+| [`klic2geo`](klic2geo/) | KLIC/WIBON-gebiedsinformatielevering (zip met IMKL 2.0 GML) → profiel: netelementen per thema, netbeheerders via bronhoudercode, graafpolygoon. Lib + CLI. |
+| [`plan2geo`](plan2geo/) | Plankaart (DWG/DXF via `acadrust`, gepatcht naar [acadifc](https://github.com/OpenAEC-Foundation/acadifc)) → ontwerplaag: geometrie, PMKL-thema uit de laagnaam, RD-filter tegen titelblok/papierruimte. Lib + CLI. |
+| [`baken-import-wasm`](baken-import-wasm/) | wasm-bindgen-bindings rond de importers (`convert_klic_zip`, `convert_cad`) voor client-side import in de browser. |
 
 ---
 

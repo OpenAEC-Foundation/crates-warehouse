@@ -1,0 +1,11 @@
+[package]
+name = "plan2geo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Plankaart (DWG/DXF) naar het Baken GeoJSON-profiel — geometrie + NLCS-laag→thema"
+
+[dependencies]
+baken-geo = { path = "../baken-geo" }
+acadrust = "0.4"
+serde_json.workspace = true

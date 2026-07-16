@@ -160,6 +160,32 @@ impl CollectedXml {
             .unwrap_or_else(|| local.to_owned())
     }
 
+    pub(crate) fn cpt_result_values(&self) -> Option<&str> {
+        self.cpt_result_values_leaf()
+            .map(|leaf| leaf.value.as_str())
+    }
+
+    pub(crate) fn cpt_result_values_path(&self) -> String {
+        self.cpt_result_values_leaf()
+            .map(|leaf| leaf.path.clone())
+            .or_else(|| {
+                self.root
+                    .as_ref()
+                    .map(|root| format!("{root}/result/DataArray/values"))
+            })
+            .unwrap_or_else(|| "result/DataArray/values".to_owned())
+    }
+
+    fn cpt_result_values_leaf(&self) -> Option<&Leaf> {
+        self.leaves.iter().find(|leaf| {
+            let segments: Vec<_> = leaf.path.split('/').collect();
+            segments.ends_with(&["DataArray", "values"])
+                && segments[..segments.len() - 2]
+                    .iter()
+                    .any(|segment| matches!(*segment, "result" | "cptResult"))
+        })
+    }
+
     fn ancestor_attribute(&self, path: &str, attribute: &str) -> Option<&str> {
         let mut ancestor = path;
         loop {

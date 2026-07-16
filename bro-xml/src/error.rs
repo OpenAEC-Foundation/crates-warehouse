@@ -14,6 +14,11 @@ pub enum BroError {
         document: BroDocumentType,
         version: String,
     },
+    #[error("expected {expected:?} document, found {found:?}")]
+    UnexpectedDocumentType {
+        expected: BroDocumentType,
+        found: BroDocumentType,
+    },
     #[error("missing required field {path}")]
     MissingField { path: String },
     #[error("invalid value at {path}: {value}")]

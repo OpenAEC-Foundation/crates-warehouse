@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{detect, xml, BroError, CommonMetadata, ParseOptions};
+use crate::{detect, xml, BroDocumentType, BroError, CommonMetadata, ParseOptions};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CptDocument {
@@ -24,10 +24,16 @@ pub struct CptMeasurement {
 
 pub(crate) fn parse(xml_source: &str, options: ParseOptions) -> Result<CptDocument, BroError> {
     let detected = detect(xml_source)?;
+    if detected.document_type != BroDocumentType::Cpt {
+        return Err(BroError::UnexpectedDocumentType {
+            expected: BroDocumentType::Cpt,
+            found: detected.document_type,
+        });
+    }
     let collected = xml::collect(xml_source)?;
     let common = xml::common_metadata(&collected, detected.schema_version)?;
-    let values_path = collected.field_path("values");
-    let values = xml::required(collected.value("values"), &values_path)?;
+    let values_path = collected.cpt_result_values_path();
+    let values = xml::required(collected.cpt_result_values(), &values_path)?;
     let mut measurements = parse_measurements(values, &values_path)?;
     if measurements.is_empty() {
         return Err(BroError::MissingField { path: values_path });

@@ -20,6 +20,19 @@ Consequently `objects()` and `cpts()` have deterministic ordering. `get()` and
 project-level description. Normal imports reject duplicate identifiers.
 `merge_from()` makes replacement behavior explicit through `DuplicatePolicy`.
 
+## Project-file compatibility
+
+`load_project_text()` and `load_project_file()` accept existing `.ifcgis` and
+IFCX projects in memory. The kernel updates typed project metadata, CPTs, and
+borehole objects while retaining drawing, GIS, deliverable, calculation, and
+other compatibility sections from the loaded project template. Opaque legacy
+borehole JSON is preserved unchanged. A borehole with retained BRO source XML
+is promoted to a typed object and written back using the established `id`,
+`position`, `final_depth`, `layers`, and `metadata` shape.
+
+`to_project_file()` and `to_project_text()` return in-memory values. Reading
+and writing paths remains the responsibility of application adapters.
+
 ## Imports and CPT layers
 
 `import_bro()` detects CPT, BHR-GT, and BHR-G XML. BRO CPT measurements are

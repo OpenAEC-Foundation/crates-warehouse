@@ -4,7 +4,10 @@ description = "Content-oriented project facade for geotechnical data"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/OpenAEC-Foundation/crates-warehouse"
 readme = "README.md"
+keywords = ["geotechnical", "bro", "cpt", "ifcx"]
+categories = ["science", "data-structures"]
 
 [dependencies]
 bro-xml = { version = "0.1.1", path = "../bro-xml" }

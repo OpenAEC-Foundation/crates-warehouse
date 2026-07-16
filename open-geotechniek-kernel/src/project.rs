@@ -22,8 +22,12 @@ pub struct ProjectMetadata {
 /// An in-memory geotechnical project with deterministically ordered objects.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GeotechnicalProject {
-    metadata: ProjectMetadata,
-    objects: BTreeMap<String, GeotechnicalObject>,
+    pub(crate) metadata: ProjectMetadata,
+    pub(crate) objects: BTreeMap<String, GeotechnicalObject>,
+    #[serde(skip)]
+    pub(crate) project_template: Option<cpt_core::ifcgis::ProjectFile>,
+    #[serde(skip)]
+    pub(crate) compatibility_bores: Vec<serde_json::Value>,
 }
 
 /// Policy used when merging objects with identifiers already in the target project.
@@ -41,6 +45,8 @@ impl GeotechnicalProject {
         Self {
             metadata,
             objects: BTreeMap::new(),
+            project_template: None,
+            compatibility_bores: Vec::new(),
         }
     }
 

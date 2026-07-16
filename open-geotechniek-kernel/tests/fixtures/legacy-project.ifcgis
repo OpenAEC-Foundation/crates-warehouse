@@ -1,0 +1,80 @@
+{
+  "header": {
+    "schema": "ifcgis-0.4",
+    "originating_system": "Open Geotechniek Studio",
+    "timestamp": "2026-07-15T10:00:00Z"
+  },
+  "project": {
+    "type": "OpenGeoProject",
+    "title": "Legacy project",
+    "client": "Example client",
+    "location": "Utrecht",
+    "project_number": "2026-007",
+    "author": "Example author",
+    "date": "2026-07-15"
+  },
+  "cpts": [
+    {
+      "id": "CPT-LEGACY-1",
+      "metadata": {
+        "project_name": "Legacy project",
+        "source_file": "legacy.gef"
+      },
+      "position": {
+        "x_rd": 136000.0,
+        "y_rd": 456000.0,
+        "z_nap": 2.5
+      },
+      "points": [
+        {
+          "depth": 1.0,
+          "depth_nap": 1.5,
+          "qc": 4.2,
+          "fs": 0.05,
+          "rf": 1.19
+        }
+      ]
+    }
+  ],
+  "bores": [
+    {
+      "id": "LEGACY-BORE-1",
+      "position": { "x": 136010.0, "y": 456010.0, "crs": "EPSG:28992" },
+      "final_depth": 3.0,
+      "layers": [],
+      "metadata": { "note": "opaque value" }
+    }
+  ],
+  "crs": { "epsg": 28992, "name": "Amersfoort / RD New" },
+  "title_block": {
+    "project": "Legacy project",
+    "project_number": "2026-007",
+    "drawing_number": "D-01"
+  },
+  "gis": {
+    "epsg": 28992,
+    "name": "Amersfoort / RD New",
+    "layers": [
+      {
+        "id": "base",
+        "label": "Base map",
+        "group": "base",
+        "kind": "tile",
+        "url": "https://example.invalid/{z}/{x}/{y}",
+        "enabled": true,
+        "opacity": 1.0
+      }
+    ]
+  },
+  "calculations": [
+    {
+      "id": "calc-1",
+      "module_id": "settlement",
+      "name": "Example calculation",
+      "input": { "value": 12 },
+      "created_at": "2026-07-15T10:00:00Z",
+      "updated_at": "2026-07-15T10:00:00Z",
+      "cpt_refs": ["CPT-LEGACY-1"]
+    }
+  ]
+}

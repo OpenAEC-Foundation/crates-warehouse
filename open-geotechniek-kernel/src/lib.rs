@@ -29,6 +29,7 @@ mod error;
 mod import;
 mod object;
 mod project;
+mod project_file;
 
 pub use error::KernelError;
 pub use object::{GeotechnicalObject, ObjectKind};

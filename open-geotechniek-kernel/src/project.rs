@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{import, GeotechnicalObject, KernelError};
 
@@ -28,6 +28,8 @@ pub struct GeotechnicalProject {
     pub(crate) project_template: Option<cpt_core::ifcgis::ProjectFile>,
     #[serde(skip)]
     pub(crate) compatibility_bores: Vec<serde_json::Value>,
+    #[serde(skip)]
+    pub(crate) compatibility_bore_ids: BTreeSet<String>,
 }
 
 /// Policy used when merging objects with identifiers already in the target project.
@@ -47,6 +49,7 @@ impl GeotechnicalProject {
             objects: BTreeMap::new(),
             project_template: None,
             compatibility_bores: Vec::new(),
+            compatibility_bore_ids: BTreeSet::new(),
         }
     }
 
@@ -76,7 +79,7 @@ impl GeotechnicalProject {
         object: GeotechnicalObject,
     ) -> Result<GeotechnicalObject, KernelError> {
         let id = object.id().to_owned();
-        if self.objects.contains_key(&id) {
+        if self.objects.contains_key(&id) || self.compatibility_bore_ids.contains(&id) {
             return Err(KernelError::DuplicateObject { id });
         }
         self.objects.insert(id, object.clone());
@@ -127,13 +130,18 @@ impl GeotechnicalProject {
         policy: DuplicatePolicy,
     ) -> Result<(), KernelError> {
         if policy == DuplicatePolicy::Reject {
-            if let Some(id) = other
-                .objects
-                .keys()
-                .find(|id| self.objects.contains_key(*id))
-            {
+            if let Some(id) = other.objects.keys().find(|id| {
+                self.objects.contains_key(*id) || self.compatibility_bore_ids.contains(*id)
+            }) {
                 return Err(KernelError::DuplicateObject { id: id.clone() });
             }
+        } else {
+            let incoming_ids = other.objects.keys().cloned().collect::<BTreeSet<_>>();
+            self.compatibility_bores.retain(|bore| {
+                compatibility_bore_id(bore).is_none_or(|id| !incoming_ids.contains(id))
+            });
+            self.compatibility_bore_ids
+                .retain(|id| !incoming_ids.contains(id));
         }
         self.objects.extend(other.objects);
         Ok(())
@@ -150,4 +158,8 @@ impl GeotechnicalProject {
             }
         }
     }
+}
+
+pub(crate) fn compatibility_bore_id(value: &serde_json::Value) -> Option<&str> {
+    value.get("id")?.as_str()
 }

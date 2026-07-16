@@ -1,4 +1,7 @@
-use crate::{GeotechnicalObject, GeotechnicalProject, KernelError, ProjectMetadata};
+use crate::{
+    project::compatibility_bore_id, GeotechnicalObject, GeotechnicalProject, KernelError,
+    ProjectMetadata,
+};
 
 impl GeotechnicalProject {
     /// Loads an existing legacy `.ifcgis` or IFCX project from JSON text.
@@ -18,7 +21,16 @@ impl GeotechnicalProject {
         for bore in &file.bores {
             match typed_bore(bore) {
                 Some(object) => insert_loaded(&mut project, object)?,
-                None => project.compatibility_bores.push(bore.clone()),
+                None => {
+                    if let Some(id) = compatibility_bore_id(bore) {
+                        if project.objects.contains_key(id)
+                            || !project.compatibility_bore_ids.insert(id.to_owned())
+                        {
+                            return Err(KernelError::DuplicateObject { id: id.to_owned() });
+                        }
+                    }
+                    project.compatibility_bores.push(bore.clone());
+                }
             }
         }
 
@@ -94,13 +106,16 @@ fn insert_loaded(
     object: GeotechnicalObject,
 ) -> Result<(), KernelError> {
     let id = object.id().to_owned();
-    if project.objects.insert(id.clone(), object).is_some() {
+    if project.compatibility_bore_ids.contains(&id)
+        || project.objects.insert(id.clone(), object).is_some()
+    {
         return Err(KernelError::DuplicateObject { id });
     }
     Ok(())
 }
 
 fn typed_bore(value: &serde_json::Value) -> Option<GeotechnicalObject> {
+    let wrapper_id = compatibility_bore_id(value)?;
     let source = value
         .get("source_xml")
         .or_else(|| value.get("sourceXml"))
@@ -110,11 +125,12 @@ fn typed_bore(value: &serde_json::Value) -> Option<GeotechnicalObject> {
     let options = bro_xml::ParseOptions {
         retain_source: true,
     };
-    match bro_xml::parse_with_options(source, options).ok()? {
+    let object = match bro_xml::parse_with_options(source, options).ok()? {
         bro_xml::BroDocument::BhrGt(document) => Some(GeotechnicalObject::BhrGt(document)),
         bro_xml::BroDocument::BhrG(document) => Some(GeotechnicalObject::BhrG(document)),
         bro_xml::BroDocument::Cpt(_) => None,
-    }
+    }?;
+    (object.id() == wrapper_id).then_some(object)
 }
 
 fn typed_bore_json(object: &GeotechnicalObject) -> Option<serde_json::Value> {

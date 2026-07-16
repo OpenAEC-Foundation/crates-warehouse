@@ -28,7 +28,11 @@ borehole objects while retaining drawing, GIS, deliverable, calculation, and
 other compatibility sections from the loaded project template. Opaque legacy
 borehole JSON is preserved unchanged. A borehole with retained BRO source XML
 is promoted to a typed object and written back using the established `id`,
-`position`, `final_depth`, `layers`, and `metadata` shape.
+`position`, `final_depth`, `layers`, and `metadata` shape. Promotion requires
+the wrapper ID and parsed XML ID to agree; mismatched content remains opaque.
+Opaque string IDs still reserve their project identity, so later imports cannot
+silently shadow them. Direct BHR imports retain their source XML to remain typed
+across project-file round trips.
 
 `to_project_file()` and `to_project_text()` return in-memory values. Reading
 and writing paths remains the responsibility of application adapters.

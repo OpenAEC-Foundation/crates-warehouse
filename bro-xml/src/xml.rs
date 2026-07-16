@@ -15,6 +15,7 @@ pub(crate) struct Leaf {
 pub(crate) struct CollectedXml {
     pub(crate) leaves: Vec<Leaf>,
     attributes: BTreeMap<String, BTreeMap<String, String>>,
+    root: Option<String>,
 }
 
 pub(crate) fn local_name(name: &[u8]) -> String {
@@ -60,6 +61,9 @@ pub(crate) fn collect(xml: &str) -> Result<CollectedXml, BroError> {
                     *parent_has_child = true;
                 }
                 stack.push(local_name(element.name().as_ref()));
+                if collected.root.is_none() {
+                    collected.root = stack.first().cloned();
+                }
                 text.push(String::new());
                 has_child.push(false);
                 collect_attributes(&reader, &element, &stack.join("/"), &mut collected)?;
@@ -69,6 +73,9 @@ pub(crate) fn collect(xml: &str) -> Result<CollectedXml, BroError> {
                     *parent_has_child = true;
                 }
                 stack.push(local_name(element.name().as_ref()));
+                if collected.root.is_none() {
+                    collected.root = stack.first().cloned();
+                }
                 let path = stack.join("/");
                 collect_attributes(&reader, &element, &path, &mut collected)?;
                 collected.leaves.push(Leaf {
@@ -137,10 +144,20 @@ fn collect_attributes(
 
 impl CollectedXml {
     pub(crate) fn value(&self, local: &str) -> Option<&str> {
+        self.leaf(local).map(|leaf| leaf.value.as_str())
+    }
+
+    fn leaf(&self, local: &str) -> Option<&Leaf> {
         self.leaves
             .iter()
             .find(|leaf| leaf.path.rsplit('/').next() == Some(local))
-            .map(|leaf| leaf.value.as_str())
+    }
+
+    pub(crate) fn field_path(&self, local: &str) -> String {
+        self.leaf(local)
+            .map(|leaf| leaf.path.clone())
+            .or_else(|| self.root.as_ref().map(|root| format!("{root}/{local}")))
+            .unwrap_or_else(|| local.to_owned())
     }
 
     fn ancestor_attribute(&self, path: &str, attribute: &str) -> Option<&str> {
@@ -162,7 +179,8 @@ pub(crate) fn common_metadata(
     xml: &CollectedXml,
     schema_version: SchemaVersion,
 ) -> Result<CommonMetadata, BroError> {
-    let bro_id = required(xml.value("broId"), "broId")?.to_owned();
+    let bro_id_path = xml.field_path("broId");
+    let bro_id = required(xml.value("broId"), &bro_id_path)?.to_owned();
     let position = parse_position(xml)?;
     let vertical_position = parse_vertical_position(xml)?;
     let registration_time = optional_date(xml, "objectRegistrationTime")?;
@@ -188,7 +206,7 @@ pub(crate) fn common_metadata(
         .filter_map(|leaf| {
             let local = leaf.path.rsplit('/').next()?;
             (!recognized.contains(local)
-                && leaf.value.len() < 200
+                && leaf.value.chars().count() < 200
                 && !excluded_extension_path(&leaf.path))
             .then(|| (leaf.path.clone(), leaf.value.clone()))
         })
@@ -212,8 +230,8 @@ pub(crate) fn common_metadata(
 }
 
 fn optional_date(xml: &CollectedXml, local: &str) -> Result<Option<NaiveDate>, BroError> {
-    xml.value(local)
-        .map(|value| parse_date(local, value))
+    xml.leaf(local)
+        .map(|leaf| parse_date(&leaf.path, &leaf.value))
         .transpose()
 }
 
@@ -234,11 +252,11 @@ fn parse_position(xml: &CollectedXml) -> Result<Option<Position>, BroError> {
 }
 
 fn parse_vertical_position(xml: &CollectedXml) -> Result<Option<VerticalPosition>, BroError> {
-    let Some(offset) = xml.value("offset") else {
+    let Some(offset) = xml.leaf("offset") else {
         return Ok(None);
     };
     Ok(Some(VerticalPosition {
-        offset: parse_f64("offset", offset)?,
+        offset: parse_f64(&offset.path, &offset.value)?,
         datum: xml
             .value("verticalDatum")
             .or_else(|| xml.value("datum"))

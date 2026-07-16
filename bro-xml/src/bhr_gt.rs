@@ -8,11 +8,11 @@ pub struct BhrGtDocument {
     pub source_xml: Option<String>,
 }
 
-pub(crate) fn parse(xml_source: &str, options: ParseOptions) -> Result<BhrGtDocument, BroError> {
+pub(crate) fn parse(xml_source: &str, _options: ParseOptions) -> Result<BhrGtDocument, BroError> {
     let detected = detect(xml_source)?;
     let collected = xml::collect(xml_source)?;
-    Ok(BhrGtDocument {
-        common: xml::common_metadata(&collected, detected.schema_version)?,
-        source_xml: options.retain_source.then(|| xml_source.to_owned()),
+    let _common = xml::common_metadata(&collected, detected.schema_version)?;
+    Err(BroError::MissingField {
+        path: collected.field_path("boring"),
     })
 }

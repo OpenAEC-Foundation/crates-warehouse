@@ -39,6 +39,10 @@ const COLOURS: &[(&str, &str)] = &[
     ("groen", "Groen"),
     ("oranje", "Oranje"),
     ("rood", "Rood"),
+    (
+        "roze",
+        "Roze omvat de Munsellkleuren 10R 8/3, 10R 8/4, 2.5YR 8/3, 2.5YR 8/4, 5YR 7/3, 5YR 7/4, 5YR 8/3, 5YR 8/4, 7.5YR 7/3, 7.5YR 7/4, 7.5YR 8/3 en 7.5YR 8/4 (pink).",
+    ),
     ("wit", "Wit"),
     ("zwart", "Zwart"),
 ];

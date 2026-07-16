@@ -25,7 +25,7 @@ struct DomainResponse {
 struct CodeSet {
     variant: &'static str,
     constant: &'static str,
-    domain: Option<&'static str>,
+    domains: &'static [&'static str],
     seeds: &'static [(&'static str, &'static str)],
 }
 
@@ -33,7 +33,7 @@ const CODE_SETS: &[CodeSet] = &[
     CodeSet {
         variant: "GeotechnicalSoilName",
         constant: "GEOTECHNICAL_SOIL_NAMES",
-        domain: Some("urn:bro:bhrgt:GeotechnicalSoilName"),
+        domains: &["urn:bro:bhrgt:GeotechnicalSoilName"],
         seeds: &[
             ("matigFijnZand", "Matig fijn zand"),
             ("sterkSiltigeKlei", "Sterk siltige klei"),
@@ -42,19 +42,19 @@ const CODE_SETS: &[CodeSet] = &[
     CodeSet {
         variant: "Lithology",
         constant: "LITHOLOGIES",
-        domain: Some("urn:bro:bhrg:GeologicalSoilName"),
+        domains: &["urn:bro:bhrg:GeologicalSoilName"],
         seeds: &[("klei", "Klei"), ("zand", "Zand")],
     },
     CodeSet {
         variant: "Colour",
         constant: "COLOURS",
-        domain: Some("urn:bro:bhrgt:Colour"),
+        domains: &["urn:bro:bhrgt:Colour", "urn:bro:bhrg:Colour"],
         seeds: &[("bruin", "Bruin"), ("geel", "Geel")],
     },
     CodeSet {
         variant: "QualityRegime",
         constant: "QUALITY_REGIMES",
-        domain: None,
+        domains: &[],
         seeds: &[
             ("IMBRO", "IMBRO-kwaliteitsregime"),
             ("IMBRO/A", "IMBRO/A-kwaliteitsregime"),
@@ -70,20 +70,31 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut tables = Vec::new();
 
     for set in CODE_SETS {
-        let mut entries = set
-            .domain
+        let domain_payloads = set
+            .domains
+            .iter()
             .map(|domain| fetch_codes(&client, domain))
-            .transpose()?
-            .unwrap_or_default();
-        entries.extend(set.seeds.iter().map(|(code, description)| CodeEntry {
-            code: (*code).to_owned(),
-            description: (*description).to_owned(),
-        }));
+            .collect::<Result<Vec<_>, _>>()?;
+        let entries = merge_code_payloads(domain_payloads, set.seeds);
         tables.push((set, entries));
     }
 
     fs::write(output, render_module(&tables))?;
     Ok(())
+}
+
+fn merge_code_payloads(
+    domain_payloads: Vec<Vec<CodeEntry>>,
+    seeds: &[(&str, &str)],
+) -> Vec<CodeEntry> {
+    domain_payloads
+        .into_iter()
+        .flatten()
+        .chain(seeds.iter().map(|(code, description)| CodeEntry {
+            code: (*code).to_owned(),
+            description: (*description).to_owned(),
+        }))
+        .collect()
 }
 
 fn output_path() -> Result<PathBuf, Box<dyn Error>> {
@@ -206,5 +217,58 @@ mod tests {
                 set.variant
             );
         }
+    }
+
+    #[test]
+    fn colour_combines_domain_payloads_into_one_sorted_table() {
+        let colour = CODE_SETS
+            .iter()
+            .find(|set| set.variant == "Colour")
+            .unwrap();
+        assert_eq!(
+            colour.domains,
+            &["urn:bro:bhrgt:Colour", "urn:bro:bhrg:Colour",]
+        );
+
+        let entries = merge_code_payloads(
+            vec![
+                vec![CodeEntry {
+                    code: "paars".to_owned(),
+                    description: "BHR-GT paars".to_owned(),
+                }],
+                vec![CodeEntry {
+                    code: "roze".to_owned(),
+                    description: "BHR-G roze".to_owned(),
+                }],
+            ],
+            &[],
+        );
+        let rendered = render_table(colour.constant, entries);
+
+        assert!(rendered.find("paars").unwrap() < rendered.find("roze").unwrap());
+        assert!(rendered.contains(r#"("paars", "BHR-GT paars")"#));
+        assert!(rendered.contains(r#"("roze", "BHR-G roze")"#));
+    }
+
+    #[test]
+    fn later_domain_payload_wins_duplicate_codes_deterministically() {
+        let entries = merge_code_payloads(
+            vec![
+                vec![CodeEntry {
+                    code: "bruin".to_owned(),
+                    description: "eerste domein".to_owned(),
+                }],
+                vec![CodeEntry {
+                    code: "bruin".to_owned(),
+                    description: "tweede domein".to_owned(),
+                }],
+            ],
+            &[],
+        );
+        let rendered = render_table("COLOURS", entries);
+
+        assert_eq!(rendered.matches(r#"("bruin", "#).count(), 1);
+        assert!(!rendered.contains("eerste domein"));
+        assert!(rendered.contains(r#"("bruin", "tweede domein")"#));
     }
 }

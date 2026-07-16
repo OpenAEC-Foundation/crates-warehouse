@@ -35,6 +35,7 @@ pub struct ParseOptions {
 pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
     let mut reader = NsReader::from_str(xml);
     let mut root = None;
+    let mut detected = None;
 
     loop {
         match reader.read_resolved_event() {
@@ -43,7 +44,8 @@ pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
                     String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
                 root.get_or_insert_with(|| local_name.clone());
 
-                let Some((document_type, supported_version)) = supported_document(&local_name)
+                let Some((document_type, namespace_family, supported_version)) =
+                    supported_document(&local_name)
                 else {
                     continue;
                 };
@@ -54,11 +56,12 @@ pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
                     ResolveResult::Unbound => String::new(),
                     ResolveResult::Unknown(prefix) => String::from_utf8_lossy(&prefix).into_owned(),
                 };
-                let version =
-                    parse_version(&namespace).ok_or_else(|| BroError::UnsupportedSchema {
+                let version = parse_version(&namespace, namespace_family).ok_or_else(|| {
+                    BroError::UnsupportedSchema {
                         document: document_type,
                         version: namespace.clone(),
-                    })?;
+                    }
+                })?;
 
                 if version != supported_version {
                     return Err(BroError::UnsupportedSchema {
@@ -67,13 +70,13 @@ pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
                     });
                 }
 
-                return Ok(DetectedDocument {
+                detected = Some(DetectedDocument {
                     document_type,
                     schema_version: version,
                 });
             }
             Ok((_, Event::Eof)) => {
-                return Err(BroError::UnsupportedDocument {
+                return detected.ok_or_else(|| BroError::UnsupportedDocument {
                     root: root.unwrap_or_default(),
                 });
             }
@@ -88,17 +91,23 @@ pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
     }
 }
 
-fn supported_document(local_name: &str) -> Option<(BroDocumentType, SchemaVersion)> {
+fn supported_document(local_name: &str) -> Option<(BroDocumentType, &'static str, SchemaVersion)> {
     match local_name {
-        "CPT_O" => Some((BroDocumentType::Cpt, SchemaVersion::new(1, 1))),
-        "BHR_GT_O" => Some((BroDocumentType::BhrGt, SchemaVersion::new(2, 1))),
-        "BHR_G_O" => Some((BroDocumentType::BhrG, SchemaVersion::new(3, 1))),
+        "CPT_O" => Some((BroDocumentType::Cpt, "dscpt", SchemaVersion::new(1, 1))),
+        "BHR_GT_O" => Some((BroDocumentType::BhrGt, "dsbhr-gt", SchemaVersion::new(2, 1))),
+        "BHR_G_O" => Some((BroDocumentType::BhrG, "dsbhrg", SchemaVersion::new(3, 1))),
         _ => None,
     }
 }
 
-fn parse_version(namespace: &str) -> Option<SchemaVersion> {
-    let suffix = namespace.trim_end_matches('/').rsplit('/').next()?;
-    let (major, minor) = suffix.split_once('.')?;
+fn parse_version(namespace: &str, expected_family: &str) -> Option<SchemaVersion> {
+    let mut segments = namespace.trim_end_matches('/').rsplit('/');
+    let version = segments.next()?;
+    let family = segments.next()?;
+    if family != expected_family {
+        return None;
+    }
+
+    let (major, minor) = version.split_once('.')?;
     Some(SchemaVersion::new(major.parse().ok()?, minor.parse().ok()?))
 }

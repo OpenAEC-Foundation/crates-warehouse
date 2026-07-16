@@ -34,3 +34,48 @@ fn rejects_non_bro_xml() {
         bro_xml::BroError::UnsupportedDocument { .. }
     ));
 }
+
+#[test]
+fn rejects_supported_local_name_in_wrong_namespace_family() {
+    let error = detect(r#"<CPT_O xmlns="https://example.invalid/1.1" />"#).unwrap_err();
+    assert!(matches!(
+        error,
+        bro_xml::BroError::UnsupportedSchema {
+            document: BroDocumentType::Cpt,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rejects_unsupported_schema_version() {
+    let error =
+        detect(r#"<BHR_GT_O xmlns="http://www.broservices.nl/xsd/dsbhr-gt/9.9" />"#).unwrap_err();
+    assert!(matches!(
+        error,
+        bro_xml::BroError::UnsupportedSchema {
+            document: BroDocumentType::BhrGt,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rejects_supported_local_name_without_namespace() {
+    let error = detect("<BHR_G_O />").unwrap_err();
+    assert!(matches!(
+        error,
+        bro_xml::BroError::UnsupportedSchema {
+            document: BroDocumentType::BhrG,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rejects_malformed_xml() {
+    let error =
+        detect(r#"<CPT_O xmlns="http://www.broservices.nl/xsd/dscpt/1.1"><broken></CPT_O>"#)
+            .unwrap_err();
+    assert!(matches!(error, bro_xml::BroError::InvalidXml { .. }));
+}

@@ -389,6 +389,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bro-reference-codegen"
+version = "0.1.1"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bro-xml"
 version = "0.1.1"
 dependencies = [

@@ -6,21 +6,33 @@ use serde::{Deserialize, Serialize};
 use crate::{detect, xml, BroDocumentType, BroError, CommonMetadata, ParseOptions};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A parsed geological borehole investigation.
 pub struct BhrGDocument {
+    /// Metadata shared by supported BRO documents.
     pub common: CommonMetadata,
+    /// Final boring depth in metres below the local reference level.
     pub final_depth: Option<f64>,
+    /// Described intervals ordered by increasing upper boundary.
     pub intervals: Vec<GeologicalInterval>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Complete source XML when [`ParseOptions::retain_source`] is enabled.
     pub source_xml: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A geologically described depth interval.
 pub struct GeologicalInterval {
+    /// Upper boundary in metres below the local reference level.
     pub upper_boundary: f64,
+    /// Lower boundary in metres below the local reference level.
     pub lower_boundary: f64,
+    /// Original lithology code.
     pub lithology: Option<String>,
+    /// Original colour code.
     pub colour: Option<String>,
+    /// Free-text interval description.
     pub description: Option<String>,
+    /// Unmodelled interval values, keyed by their relative XML path.
     pub extensions: BTreeMap<String, String>,
 }
 

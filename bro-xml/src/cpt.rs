@@ -3,22 +3,35 @@ use serde::{Deserialize, Serialize};
 use crate::{detect, xml, BroDocumentType, BroError, CommonMetadata, ParseOptions};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A parsed geotechnical cone penetration test.
 pub struct CptDocument {
+    /// Metadata shared by supported BRO documents.
     pub common: CommonMetadata,
+    /// Final investigation depth in metres below the local reference level.
     pub final_depth: Option<f64>,
+    /// Original cone-type code.
     pub cone_type: Option<String>,
+    /// Measurements ordered by increasing depth.
     pub measurements: Vec<CptMeasurement>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Complete source XML when [`ParseOptions::retain_source`] is enabled.
     pub source_xml: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// One CPT measurement row.
 pub struct CptMeasurement {
+    /// Measurement depth in metres below the local reference level.
     pub depth: f64,
+    /// Cone resistance in megapascals.
     pub cone_resistance: Option<f64>,
+    /// Sleeve friction in megapascals.
     pub sleeve_friction: Option<f64>,
+    /// Friction ratio in percent.
     pub friction_ratio: Option<f64>,
+    /// Pore pressure measured at the u2 position, in megapascals.
     pub pore_pressure_u2: Option<f64>,
+    /// Inclination in degrees.
     pub inclination: Option<f64>,
 }
 

@@ -4,29 +4,46 @@ use serde::{Deserialize, Serialize};
 use crate::{detect, xml, BroDocumentType, BroError, CommonMetadata, ParseOptions};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A parsed geotechnical borehole investigation.
 pub struct BhrGtDocument {
+    /// Metadata shared by supported BRO documents.
     pub common: CommonMetadata,
+    /// Final boring depth in metres below the local reference level.
     pub final_depth: Option<f64>,
+    /// Original boring-procedure code.
     pub boring_procedure: Option<String>,
+    /// Original description-procedure code.
     pub description_procedure: Option<String>,
+    /// Described intervals ordered by increasing upper boundary.
     pub intervals: Vec<GeotechnicalInterval>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Complete source XML when [`ParseOptions::retain_source`] is enabled.
     pub source_xml: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A geotechnically described depth interval.
 pub struct GeotechnicalInterval {
+    /// Upper boundary in metres below the local reference level.
     pub upper_boundary: f64,
+    /// Lower boundary in metres below the local reference level.
     pub lower_boundary: f64,
+    /// Original geotechnical-soil-name code.
     pub soil_name: Option<String>,
+    /// Original colour code.
     pub colour: Option<String>,
+    /// Free-text interval description.
     pub description: Option<String>,
+    /// Additional coded description attributes not promoted to dedicated fields.
     pub secondary: Vec<SecondaryAttribute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// An additional coded geotechnical description attribute.
 pub struct SecondaryAttribute {
+    /// XML local name identifying the attribute.
     pub code: String,
+    /// Original code or text stored in the source document.
     pub value: String,
 }
 

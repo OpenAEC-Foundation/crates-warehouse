@@ -5,74 +5,118 @@ use std::collections::BTreeMap;
 use crate::BroError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A document family supported by this crate.
 pub enum BroDocumentType {
+    /// Geotechnical cone penetration test.
     Cpt,
+    /// Geotechnical borehole investigation.
     BhrGt,
+    /// Geological borehole investigation.
     BhrG,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A BRO XML schema version.
 pub struct SchemaVersion {
+    /// Major schema version.
     pub major: u16,
+    /// Minor schema version.
     pub minor: u16,
 }
 
 impl SchemaVersion {
+    /// Creates a schema-version value.
     pub const fn new(major: u16, minor: u16) -> Self {
         Self { major, minor }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The family and schema version detected from an XML document.
 pub struct DetectedDocument {
+    /// Detected document family.
     pub document_type: BroDocumentType,
+    /// Detected schema version.
     pub schema_version: SchemaVersion,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Options shared by all parsing functions.
 pub struct ParseOptions {
+    /// Whether to retain the complete input XML in the parsed document.
     pub retain_source: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A horizontal position in the coordinate reference system named by [`Self::crs`].
 pub struct Position {
+    /// Horizontal x coordinate.
     pub x: f64,
+    /// Horizontal y coordinate.
     pub y: f64,
+    /// Coordinate reference-system identifier found in the source document.
     pub crs: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A vertical offset and its optional datum.
 pub struct VerticalPosition {
+    /// Vertical offset in metres.
     pub offset: f64,
+    /// Vertical datum identifier found in the source document.
     pub datum: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Metadata common to all supported BRO document families.
 pub struct CommonMetadata {
+    /// BRO registration identifier.
     pub bro_id: String,
+    /// Schema version used by the source document.
     pub schema_version: SchemaVersion,
+    /// Original BRO quality-regime code.
     pub quality_regime: Option<String>,
+    /// Accountable-party identifier.
     pub accountable_party: Option<String>,
+    /// Registration date.
     pub registration_time: Option<chrono::NaiveDate>,
+    /// Date on which the investigation started.
     pub research_start_date: Option<chrono::NaiveDate>,
+    /// Date on which the investigation ended.
     pub research_end_date: Option<chrono::NaiveDate>,
+    /// Horizontal position, when present.
     pub position: Option<Position>,
+    /// Vertical position, when present.
     pub vertical_position: Option<VerticalPosition>,
+    /// Unmodelled metadata values, keyed by their XML path.
     pub extensions: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+/// A parsed document whose concrete family was detected automatically.
 pub enum BroDocument {
+    /// A parsed CPT document.
     Cpt(crate::CptDocument),
+    /// A parsed geotechnical borehole document.
     BhrGt(crate::BhrGtDocument),
+    /// A parsed geological borehole document.
     BhrG(crate::BhrGDocument),
 }
 
+/// Detects and parses any supported BRO document family.
+///
+/// ```
+/// let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/cpt-minimal.xml"));
+/// let document = bro_xml::parse(xml)?;
+/// assert!(matches!(document, bro_xml::BroDocument::Cpt(_)));
+/// # Ok::<(), bro_xml::BroError>(())
+/// ```
 pub fn parse(xml: &str) -> Result<BroDocument, BroError> {
     parse_with_options(xml, ParseOptions::default())
 }
 
+/// Detects and parses a document with explicit source-retention options.
 pub fn parse_with_options(xml: &str, options: ParseOptions) -> Result<BroDocument, BroError> {
     match detect(xml)?.document_type {
         BroDocumentType::Cpt => crate::cpt::parse(xml, options).map(BroDocument::Cpt),
@@ -81,6 +125,14 @@ pub fn parse_with_options(xml: &str, options: ParseOptions) -> Result<BroDocumen
     }
 }
 
+/// Detects the family and supported schema version without parsing document fields.
+///
+/// ```
+/// let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/cpt-minimal.xml"));
+/// let detected = bro_xml::detect(xml)?;
+/// assert_eq!(detected.document_type, bro_xml::BroDocumentType::Cpt);
+/// # Ok::<(), bro_xml::BroError>(())
+/// ```
 pub fn detect(xml: &str) -> Result<DetectedDocument, BroError> {
     let mut reader = NsReader::from_str(xml);
     let mut root = None;

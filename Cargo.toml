@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "bro-xml",
     "cpt-core",
+    "tools/bro-reference-codegen",
     "isso51-api",
     "isso51-core",
     "isso51-ifcx",

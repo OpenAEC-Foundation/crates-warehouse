@@ -33,6 +33,35 @@ fn imports_bro_cpt_into_existing_cpt_domain() {
 }
 
 #[test]
+fn preserves_non_rd_coordinates_without_typed_rd_position() {
+    let mut project = GeotechnicalProject::new(ProjectMetadata::default());
+    let object = project
+        .import_bro(include_str!("fixtures/cpt-non-rd.xml"), "non-rd.xml")
+        .unwrap();
+    let GeotechnicalObject::Cpt(cpt) = object else {
+        panic!("expected CPT")
+    };
+
+    assert_eq!(cpt.id, "CPT000000000003");
+    assert!(cpt.position.is_none());
+    assert_eq!(
+        cpt.metadata.extra.get("position_crs").map(String::as_str),
+        Some("EPSG:4326")
+    );
+    assert_eq!(
+        cpt.metadata.extra.get("position_x").map(String::as_str),
+        Some("5.1")
+    );
+    assert_eq!(
+        cpt.metadata.extra.get("position_y").map(String::as_str),
+        Some("52.1")
+    );
+    assert_eq!(project.objects().count(), 1);
+    assert_eq!(project.cpts().count(), 1);
+    assert_eq!(project.get("CPT000000000003").unwrap().id(), cpt.id);
+}
+
+#[test]
 fn calculates_nap_depth_only_when_vertical_offset_exists() {
     let xml = include_str!("fixtures/cpt-minimal.xml").replace(
         "<conePenetrationTest>",

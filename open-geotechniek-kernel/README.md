@@ -25,7 +25,10 @@ project-level description. Normal imports reject duplicate identifiers.
 `import_bro()` detects CPT, BHR-GT, and BHR-G XML. BRO CPT measurements are
 converted loss-aware into `cpt_core::Cpt`: the supported measurement channels
 are mapped directly, vertical depth is calculated only when a vertical offset
-exists, and remaining common metadata is retained in `Metadata::extra`.
+exists, and remaining common metadata is retained in `Metadata::extra`. Only
+coordinates explicitly identified as EPSG:28992 populate the RD-specific typed
+position. Coordinates in another CRS remain available losslessly as
+`position_crs`, `position_x`, and `position_y` in `Metadata::extra`.
 
 `import_cpt()` accepts content supported by `cpt-core`. A source label ending in
 `.ifcgeo` selects the IfcGeo reader; other labels use automatic content

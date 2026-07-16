@@ -22,10 +22,18 @@ pub(crate) fn from_bro(document: CptDocument, source_file: &str) -> cpt_core::Cp
         extra.insert("final_depth".to_owned(), value.to_string());
     }
 
-    let position = common.position.as_ref().map(|position| cpt_core::Position {
-        x_rd: position.x,
-        y_rd: position.y,
-        z_nap: vertical_offset,
+    let position = common.position.as_ref().and_then(|position| {
+        if is_rd_crs(&position.crs) {
+            Some(cpt_core::Position {
+                x_rd: position.x,
+                y_rd: position.y,
+                z_nap: vertical_offset,
+            })
+        } else {
+            extra.insert("position_x".to_owned(), position.x.to_string());
+            extra.insert("position_y".to_owned(), position.y.to_string());
+            None
+        }
     });
     let points = measurements
         .into_iter()
@@ -52,6 +60,10 @@ pub(crate) fn from_bro(document: CptDocument, source_file: &str) -> cpt_core::Cp
         position,
         points,
     }
+}
+
+fn is_rd_crs(crs: &str) -> bool {
+    crs.trim().eq_ignore_ascii_case("EPSG:28992")
 }
 
 fn common_extra(common: &CommonMetadata) -> BTreeMap<String, String> {

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CPT_O xmlns="http://www.broservices.nl/xsd/dscpt/1.1"
+       xmlns:gml="http://www.opengis.net/gml/3.2"
+       xmlns:swe="http://www.opengis.net/swe/2.0">
+  <broId>CPT000000000099</broId>
+  <standardizedLocation><location><gml:Point srsName="urn:ogc:def:crs:EPSG::4258"><gml:pos>52.10 5.10</gml:pos></gml:Point></location></standardizedLocation>
+  <deliveredLocation><location><gml:Point srsName="urn:ogc:def:crs:EPSG::28992"><gml:pos>155123.4 463567.8</gml:pos></gml:Point></location></deliveredLocation>
+  <conePenetrationTest>
+    <conePenetrometer><conePenetrometerType>electrical</conePenetrometerType></conePenetrometer>
+    <result><swe:DataArray><swe:values>1,1.0,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24</swe:values></swe:DataArray></result>
+  </conePenetrationTest>
+</CPT_O>

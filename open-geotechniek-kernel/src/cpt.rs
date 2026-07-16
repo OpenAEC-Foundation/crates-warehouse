@@ -63,7 +63,43 @@ pub(crate) fn from_bro(document: CptDocument, source_file: &str) -> cpt_core::Cp
 }
 
 fn is_rd_crs(crs: &str) -> bool {
-    crs.trim().eq_ignore_ascii_case("EPSG:28992")
+    let tokens = crs
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let Some(epsg_index) = tokens
+        .iter()
+        .position(|token| token.eq_ignore_ascii_case("epsg"))
+    else {
+        return false;
+    };
+    let prefix = &tokens[..epsg_index];
+    let suffix = &tokens[epsg_index + 1..];
+    let recognized_authority = prefix.is_empty()
+        || prefix
+            .iter()
+            .map(|token| token.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            == ["urn", "ogc", "def", "crs"]
+        || (prefix.first().is_some_and(|token| {
+            token.eq_ignore_ascii_case("http") || token.eq_ignore_ascii_case("https")
+        }) && prefix
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("opengis"))
+            && prefix
+                .iter()
+                .rev()
+                .take(2)
+                .map(|token| token.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                == ["crs", "def"]);
+    recognized_authority
+        && suffix.last().is_some_and(|code| *code == "28992")
+        && suffix.len() <= 3
+        && !suffix.is_empty()
+        && suffix[..suffix.len() - 1]
+            .iter()
+            .all(|token| token.chars().all(|character| character.is_ascii_digit()))
 }
 
 fn common_extra(common: &CommonMetadata) -> BTreeMap<String, String> {

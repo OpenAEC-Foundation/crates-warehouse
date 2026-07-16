@@ -131,3 +131,56 @@ fn imports_ifcgeo_content_by_source_extension() {
     assert_eq!(cpt.id, "CPT-JSON");
     assert_eq!(cpt.metadata.source_file, "new.ifcgeo");
 }
+
+#[test]
+fn recognizes_delivered_rd_urn_without_using_standardized_coordinates() {
+    let mut project = GeotechnicalProject::new(ProjectMetadata::default());
+    let object = project
+        .import_bro(
+            include_str!("fixtures/cpt-dispatch-location.xml"),
+            "dispatch.xml",
+        )
+        .unwrap();
+    let GeotechnicalObject::Cpt(cpt) = object else {
+        panic!("expected CPT")
+    };
+    let position = cpt.position.unwrap();
+
+    assert_eq!(position.x_rd, 155_123.4);
+    assert_eq!(position.y_rd, 463_567.8);
+    assert_eq!(
+        cpt.metadata.extra.get("position_crs").map(String::as_str),
+        Some("urn:ogc:def:crs:EPSG::28992")
+    );
+}
+
+#[test]
+fn recognizes_common_rd_authority_forms_without_substring_false_positives() {
+    let fixture = include_str!("fixtures/cpt-dispatch-location.xml");
+    for crs in [
+        "EPSG:28992",
+        "epsg/28992",
+        "urn:ogc:def:crs:EPSG::28992",
+        "https://www.opengis.net/def/crs/EPSG/0/28992",
+    ] {
+        let xml = fixture.replace("urn:ogc:def:crs:EPSG::28992", crs);
+        let mut project = GeotechnicalProject::new(ProjectMetadata::default());
+        let GeotechnicalObject::Cpt(cpt) = project.import_bro(&xml, "rd.xml").unwrap() else {
+            panic!("expected CPT")
+        };
+        assert!(cpt.position.is_some(), "expected RD CRS: {crs}");
+    }
+
+    for crs in [
+        "EPSG:289920",
+        "NOT-EPSG:28992",
+        "urn:ogc:def:crs:EPSG::4258",
+    ] {
+        let xml = fixture.replace("urn:ogc:def:crs:EPSG::28992", crs);
+        let mut project = GeotechnicalProject::new(ProjectMetadata::default());
+        let GeotechnicalObject::Cpt(cpt) = project.import_bro(&xml, "other.xml").unwrap() else {
+            panic!("expected CPT")
+        };
+        assert!(cpt.position.is_none(), "unexpected RD CRS: {crs}");
+    }
+}

@@ -210,8 +210,9 @@ pub(crate) fn common_metadata(
     let position = parse_position(xml)?;
     let vertical_position = parse_vertical_position(xml)?;
     let registration_time = optional_date(xml, "objectRegistrationTime")?;
-    let research_start_date = optional_date(xml, "researchStartDate")?;
-    let research_end_date = optional_date(xml, "researchEndDate")?;
+    let research_start_date =
+        optional_partial_date(xml, &["researchStartDate", "boringStartDate"])?;
+    let research_end_date = optional_partial_date(xml, &["researchEndDate", "boringEndDate"])?;
     let recognized = BTreeSet::from([
         "broId",
         "qualityRegime",
@@ -261,11 +262,39 @@ fn optional_date(xml: &CollectedXml, local: &str) -> Result<Option<NaiveDate>, B
         .transpose()
 }
 
+fn optional_partial_date(
+    xml: &CollectedXml,
+    ancestors: &[&str],
+) -> Result<Option<NaiveDate>, BroError> {
+    for ancestor in ancestors {
+        if let Some(date) = optional_date(xml, ancestor)? {
+            return Ok(Some(date));
+        }
+        if let Some(leaf) = xml.leaves.iter().find(|leaf| {
+            let segments = leaf.path.split('/').collect::<Vec<_>>();
+            segments.last() == Some(&"date")
+                && segments[..segments.len() - 1]
+                    .iter()
+                    .any(|segment| segment == ancestor)
+        }) {
+            return parse_date(&leaf.path, &leaf.value).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 fn parse_position(xml: &CollectedXml) -> Result<Option<Position>, BroError> {
-    let Some(leaf) = xml
-        .leaves
-        .iter()
-        .find(|leaf| leaf.path.rsplit('/').next() == Some("pos"))
+    let position_leaf = |container: &str| {
+        xml.leaves.iter().find(|leaf| {
+            let segments = leaf.path.split('/').collect::<Vec<_>>();
+            segments.last() == Some(&"pos")
+                && segments[..segments.len() - 1]
+                    .iter()
+                    .any(|segment| segment == &container)
+        })
+    };
+    let Some(leaf) =
+        position_leaf("deliveredLocation").or_else(|| position_leaf("standardizedLocation"))
     else {
         return Ok(None);
     };

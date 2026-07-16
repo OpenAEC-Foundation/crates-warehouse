@@ -60,7 +60,10 @@ pub(crate) fn parse(xml_source: &str, options: ParseOptions) -> Result<CptDocume
             .map(|value| parse_optional_number(value, &collected.field_path("finalDepth")))
             .transpose()?
             .flatten(),
-        cone_type: collected.value("coneType").map(str::to_owned),
+        cone_type: collected
+            .value("conePenetrometerType")
+            .or_else(|| collected.value("coneType"))
+            .map(str::to_owned),
         measurements,
         source_xml: options.retain_source.then(|| xml_source.to_owned()),
     })

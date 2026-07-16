@@ -204,6 +204,9 @@ fn build_interval(builder: LayerBuilder) -> Result<Option<GeologicalInterval>, B
         "upperboundary",
         "lowerboundary",
         "lithology",
+        "soilnamenen5104",
+        "geologicalsoilname",
+        "soilname",
         "colour",
         "color",
         "description",
@@ -218,7 +221,15 @@ fn build_interval(builder: LayerBuilder) -> Result<Option<GeologicalInterval>, B
     Ok(Some(GeologicalInterval {
         upper_boundary: upper.0,
         lower_boundary: lower.0,
-        lithology: field_value(&builder.leaves, &["lithology"]),
+        lithology: field_value(
+            &builder.leaves,
+            &[
+                "soilnamenen5104",
+                "lithology",
+                "geologicalsoilname",
+                "soilname",
+            ],
+        ),
         colour: field_value(&builder.leaves, &["colour", "color"]),
         description: field_value(&builder.leaves, &["description"]),
         extensions,

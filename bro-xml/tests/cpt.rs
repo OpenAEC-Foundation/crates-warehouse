@@ -1,4 +1,5 @@
 use bro_xml::{parse_cpt, BroDocumentType, BroError};
+use chrono::NaiveDate;
 
 const CPT_XML: &str = include_str!("fixtures/cpt-minimal.xml");
 
@@ -117,6 +118,33 @@ fn converts_bro_void_final_depth_to_none() {
         "<finalDepth>-999999</finalDepth>",
     );
     assert_eq!(parse_cpt(&xml).unwrap().final_depth, None);
+}
+
+#[test]
+fn uses_delivered_position_when_standardized_position_comes_first() {
+    let cpt = parse_cpt(include_str!("fixtures/cpt-dispatch-location.xml")).unwrap();
+    let position = cpt.common.position.unwrap();
+
+    assert_eq!(position.x, 155_123.4);
+    assert_eq!(position.y, 463_567.8);
+    assert_eq!(position.crs, "urn:ogc:def:crs:EPSG::28992");
+}
+
+#[test]
+fn reads_current_cone_penetrometer_type_field() {
+    let cpt = parse_cpt(include_str!("fixtures/cpt-dispatch-location.xml")).unwrap();
+
+    assert_eq!(cpt.cone_type.as_deref(), Some("electrical"));
+}
+
+#[test]
+fn reads_date_leaf_nested_below_research_start_date() {
+    let cpt = parse_cpt(include_str!("fixtures/cpt-dispatch-location.xml")).unwrap();
+
+    assert_eq!(
+        cpt.common.research_start_date,
+        Some(NaiveDate::from_ymd_opt(2026, 4, 3).unwrap())
+    );
 }
 
 fn replace_values(xml: &str, replacement: &str) -> String {

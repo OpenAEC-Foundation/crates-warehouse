@@ -2,6 +2,7 @@ use bro_xml::{
     parse_bhr_g, parse_bhr_g_with_options, parse_bhr_gt, parse_bhr_gt_with_options,
     BroDocumentType, BroError, ParseOptions,
 };
+use chrono::NaiveDate;
 
 #[test]
 fn parses_geotechnical_intervals() {
@@ -257,4 +258,29 @@ fn rejects_reversed_geological_interval_boundary_with_slash_path() {
         parse_bhr_g(&reversed),
         Err(BroError::InvalidValue { path, .. }) if path.contains("/layer/layer/lowerBoundary")
     ));
+}
+
+#[test]
+fn maps_current_bhr_g_soil_name_to_lithology() {
+    let bore = parse_bhr_g(include_str!("fixtures/bhr-g-dispatch.xml")).unwrap();
+
+    assert_eq!(bore.intervals.len(), 1);
+    assert_eq!(
+        bore.intervals[0].lithology.as_deref(),
+        Some("matigFijnZand")
+    );
+}
+
+#[test]
+fn reads_nested_boring_dates_without_using_unrelated_date_leaf() {
+    let bore = parse_bhr_g(include_str!("fixtures/bhr-g-dispatch.xml")).unwrap();
+
+    assert_eq!(
+        bore.common.research_start_date,
+        Some(NaiveDate::from_ymd_opt(2026, 5, 4).unwrap())
+    );
+    assert_eq!(
+        bore.common.research_end_date,
+        Some(NaiveDate::from_ymd_opt(2026, 5, 6).unwrap())
+    );
 }

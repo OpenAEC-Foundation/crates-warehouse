@@ -50,6 +50,136 @@ fn thema_uit_laag(laag: &str) -> &'static str {
     }
 }
 
+/// NLCS++-status afleiden uit de laagnaam (default: BESTAAND).
+fn status_uit_laag(laag: &str) -> &'static str {
+    let l = laag.to_uppercase();
+    if l.contains("VERWIJDER") || l.contains("- VERW") || l.contains("VERVALLEN") {
+        "VERWIJDERD"
+    } else if l.contains("REVISIE") {
+        "REVISIE"
+    } else if l.contains("NIEUW") || l.contains("AAN TE LEGGEN") || l.contains("ONTWERP") {
+        "NIEUW"
+    } else {
+        "BESTAAND"
+    }
+}
+
+/// Discipline-groep uit de laag (voor de objecttype-keuze).
+#[derive(Clone, Copy, PartialEq)]
+enum Disc {
+    Ms,
+    Ls,
+    Hs,
+    Gas,
+    Water,
+    Telecom,
+    Geen,
+}
+
+fn disc_uit_laag(l_upper: &str, tokens: &[&str]) -> Disc {
+    let heeft = |t: &str| tokens.iter().any(|x| *x == t);
+    if heeft("MS") || l_upper.contains("MIDDENSPANNING") {
+        Disc::Ms
+    } else if heeft("LS") || heeft("OVL") || l_upper.contains("LAAGSPANNING") {
+        Disc::Ls
+    } else if heeft("HS") || l_upper.contains("HOOGSPANNING") {
+        Disc::Hs
+    } else if heeft("HD") || heeft("LD") || heeft("GAS") {
+        Disc::Gas
+    } else if l_upper.contains("WATER") || heeft("W") || heeft("WL") {
+        Disc::Water
+    } else if l_upper.contains("GLASVEZEL") || l_upper.contains("DATA") || l_upper.contains("TELE") {
+        Disc::Telecom
+    } else {
+        Disc::Geen
+    }
+}
+
+/// NLCS++-objecttype afleiden uit laagnaam + entiteitsoort + blocknaam.
+/// Alleen mappen wat de standaard kent; anders None (blijft CAD-element).
+fn objecttype_uit_laag(laag: &str, is_lijn: bool, block: Option<&str>) -> Option<&'static str> {
+    let l = laag.to_uppercase();
+    let b = block.map(|s| s.to_uppercase()).unwrap_or_default();
+    let samen = format!("{l} {b}");
+    let tokens: Vec<&str> = l
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let disc = disc_uit_laag(&l, &tokens);
+
+    // expliciete puntobjecten eerst
+    if samen.contains("MANTELBUIS") {
+        return Some("Amantelbuis");
+    }
+    if samen.contains("MOF") {
+        return match disc {
+            Disc::Ms => Some("MSmof"),
+            Disc::Ls => Some("LSmof"),
+            Disc::Hs => Some("HSmof"),
+            Disc::Telecom => Some("Tmof"),
+            _ => None,
+        };
+    }
+    if samen.contains("STATION") {
+        return match disc {
+            Disc::Ms => Some("MSstation"),
+            Disc::Hs => Some("HSstation"),
+            Disc::Gas => Some("Gstation"),
+            Disc::Telecom => Some("Tstation"),
+            _ => None,
+        };
+    }
+    if samen.contains("KAST") && disc == Disc::Ls {
+        return Some("LSkast");
+    }
+    if samen.contains("OVERDRACHT") || samen.contains("HUISAANSL") {
+        return match disc {
+            Disc::Ms => Some("MSoverdrachtspunt"),
+            Disc::Ls | Disc::Geen => Some("LSoverdrachtspunt"),
+            Disc::Gas => Some("Goverdrachtspunt"),
+            Disc::Telecom => Some("Toverdrachtspunt"),
+            _ => None,
+        };
+    }
+    if samen.contains("AARDPEN") {
+        return Some("Eaardpen");
+    }
+    if samen.contains("AFSLUITER") && disc == Disc::Gas {
+        return Some("Gafsluiter");
+    }
+
+    // lijnvormige netelementen
+    if is_lijn {
+        return match disc {
+            Disc::Ms => Some("MSkabel"),
+            Disc::Ls => Some("LSkabel"),
+            Disc::Hs => Some("HSkabel"),
+            Disc::Gas => Some("Gleiding"),
+            Disc::Telecom => Some("Tkabel"),
+            Disc::Water | Disc::Geen => None, // water valt buiten NLCS++ E/G/T
+        };
+    }
+    None
+}
+
+/// Materiaal-token uit de laagnaam (PE, PVC, ST, CU, …) — voor mantelbuizen e.d.
+fn materiaal_uit_laag(laag: &str) -> Option<&'static str> {
+    let l = laag.to_uppercase();
+    for m in ["PE", "PVC", "HDPE", "ST", "CU", "GY"] {
+        if l.split(|c: char| !c.is_ascii_alphanumeric()).any(|t| t == m) {
+            return Some(match m {
+                "PE" => "PE",
+                "PVC" => "PVC",
+                "HDPE" => "HDPE",
+                "ST" => "ST",
+                "CU" => "CU",
+                _ => "GY",
+            });
+        }
+    }
+    None
+}
+
 fn seg_arc(cx: f64, cy: f64, r: f64, a0: f64, a1: f64) -> Vec<[f64; 2]> {
     // hoeken in radialen; segmenteer in ~24 stukken (NLCS kent geen bogen —
     // strooksgewijs benaderen zoals de standaard voorschrijft)
@@ -88,6 +218,7 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
 
     let mut features: Vec<Value> = Vec::new();
     let mut stats = Stats { entiteiten: 0, gefilterd: 0, tekst_overgeslagen: 0 };
+    let mut objecttypen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
 
     for ent in doc.entities() {
         stats.entiteiten += 1;
@@ -112,10 +243,25 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
             continue;
         }
 
+        // CAD-entiteit → GIS-element: objecttype (NLCS++) + status uit de laag
+        let is_lijn = geometry["type"] == "LineString" || geometry["type"] == "MultiLineString";
+        let block = extra.get("block").and_then(|v| v.as_str()).map(String::from);
+        let objecttype = objecttype_uit_laag(&laag, is_lijn, block.as_deref());
+        let status = status_uit_laag(&laag);
+
         let mut kern = Map::new();
         kern.insert("thema".into(), json!(thema_uit_laag(&laag)));
+        if let Some(ot) = objecttype {
+            kern.insert("objecttype".into(), json!(ot));
+            *objecttypen.entry(ot.to_string()).or_insert(0) += 1;
+        } else {
+            *objecttypen.entry(format!("(cad) {ent_type}")).or_insert(0) += 1;
+        }
+        kern.insert("status".into(), json!(status));
         kern.insert("type".into(), json!(ent_type));
-        kern.insert("status".into(), json!("BESTAAND"));
+        if let Some(m) = materiaal_uit_laag(&laag) {
+            kern.insert("materiaal".into(), json!(m));
+        }
 
         let mut bron = extra;
         bron.insert("laag".into(), json!(laag));
@@ -138,6 +284,7 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
     fc["baken"]["bron"]["entiteiten"] = json!(stats.entiteiten);
     fc["baken"]["bron"]["gefilterdBuitenRd"] = json!(stats.gefilterd);
     fc["baken"]["bron"]["tekstOvergeslagen"] = json!(stats.tekst_overgeslagen);
+    fc["baken"]["bron"]["objecttypen"] = json!(objecttypen);
     Ok(fc)
 }
 

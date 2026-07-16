@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BHR_G_O xmlns="http://www.broservices.nl/xsd/dsbhrg/3.1">
+  <broId>BHR000000000099</broId>
+  <unrelatedDate><date>1900-01-01</date></unrelatedDate>
+  <boring>
+    <boringStartDate><PartialDate><date>2026-05-04</date></PartialDate></boringStartDate>
+    <boringEndDate><PartialDate><date>2026-05-06</date></PartialDate></boringEndDate>
+  </boring>
+  <descriptiveBoreholeLog>
+    <layer>
+      <upperBoundary>0.0</upperBoundary>
+      <lowerBoundary>2.5</lowerBoundary>
+      <soilNameNEN5104>matigFijnZand</soilNameNEN5104>
+      <colour>geel</colour>
+    </layer>
+  </descriptiveBoreholeLog>
+</BHR_G_O>

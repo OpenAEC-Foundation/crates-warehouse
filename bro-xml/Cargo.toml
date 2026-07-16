@@ -1,0 +1,16 @@
+[package]
+name = "bro-xml"
+description = "Typed parser for Dutch BRO XML geotechnical and geological documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/OpenAEC-Foundation/crates-warehouse"
+readme = "README.md"
+keywords = ["bro", "xml", "geotechnical", "geology"]
+categories = ["parser-implementations", "science"]
+
+[dependencies]
+quick-xml = "0.36"
+serde = { workspace = true }
+thiserror = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }

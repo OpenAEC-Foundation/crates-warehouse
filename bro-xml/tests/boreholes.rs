@@ -8,6 +8,7 @@ fn parses_geotechnical_intervals() {
     let bore = parse_bhr_gt(include_str!("fixtures/bhr-gt-minimal.xml")).unwrap();
     assert_eq!(bore.common.bro_id, "BHR000000000001");
     assert_eq!(bore.intervals.len(), 2);
+    assert_eq!(bore.final_depth, Some(4.0));
     assert_eq!(
         bore.intervals[0].soil_name.as_deref(),
         Some("sterkSiltigeKlei")
@@ -20,6 +21,7 @@ fn parses_geological_intervals_without_wrapper_duplicates() {
     let bore = parse_bhr_g(include_str!("fixtures/bhr-g-minimal.xml")).unwrap();
     assert_eq!(bore.common.bro_id, "BHR000000000002");
     assert_eq!(bore.intervals.len(), 2);
+    assert_eq!(bore.final_depth, Some(6.0));
     assert_eq!(bore.intervals[0].lithology.as_deref(), Some("zand"));
 }
 
@@ -42,13 +44,13 @@ fn deduplication_preserves_fields_from_geological_wrappers() {
 #[test]
 fn collects_all_geotechnical_secondary_attribute_categories() {
     let xml = include_str!("fixtures/bhr-gt-minimal.xml").replace(
-        "      <organicMatterContent>zwakHumeus</organicMatterContent>",
+        "      <organicMatterContentClass>zwakHumeus</organicMatterContentClass>",
         r#"      <anomalousLayer>schelp</anomalousLayer>
       <chunks>grind</chunks>
       <peatFraction>weinig</peatFraction>
       <pedologicalSoilName>eerdgrond</pedologicalSoilName>
-      <organicMatterContent>zwakHumeus</organicMatterContent>
-      <carbonateContent>kalkrijk</carbonateContent>
+      <organicMatterContentClass>zwakHumeus</organicMatterContentClass>
+      <carbonateContentClass>kalkrijk</carbonateContentClass>
       <ripening>gerijpt</ripening>
       <soilStructure>massief</soilStructure>
       <horizonValue>Ah</horizonValue>"#,
@@ -61,8 +63,8 @@ fn collects_all_geotechnical_secondary_attribute_categories() {
         ("chunks", "grind"),
         ("peatFraction", "weinig"),
         ("pedologicalSoilName", "eerdgrond"),
-        ("organicMatterContent", "zwakHumeus"),
-        ("carbonateContent", "kalkrijk"),
+        ("organicMatterContentClass", "zwakHumeus"),
+        ("carbonateContentClass", "kalkrijk"),
         ("ripening", "gerijpt"),
         ("soilStructure", "massief"),
         ("horizonValue", "Ah"),
@@ -74,6 +76,24 @@ fn collects_all_geotechnical_secondary_attribute_categories() {
             "missing {code}"
         );
     }
+}
+
+#[test]
+fn keeps_pedological_soil_name_secondary_without_using_it_as_primary_soil_name() {
+    let xml = include_str!("fixtures/bhr-gt-minimal.xml").replace(
+        "<geotechnicalSoilName>sterkSiltigeKlei</geotechnicalSoilName>",
+        "<pedologicalSoilName>eerdgrond</pedologicalSoilName>",
+    );
+    let bore = parse_bhr_gt(&xml).unwrap();
+
+    assert_eq!(bore.intervals[0].soil_name, None);
+    assert!(
+        bore.intervals[0]
+            .secondary
+            .iter()
+            .any(|attribute| attribute.code == "pedologicalSoilName"
+                && attribute.value == "eerdgrond")
+    );
 }
 
 #[test]
@@ -169,7 +189,28 @@ fn sorts_geotechnical_intervals_by_upper_boundary() {
 }
 
 #[test]
-fn rejects_non_finite_and_reversed_interval_boundaries_with_slash_paths() {
+fn sorts_geological_intervals_by_upper_boundary() {
+    let xml = include_str!("fixtures/bhr-g-minimal.xml")
+        .replace(
+            "<upperBoundary>0.0</upperBoundary>",
+            "<upperBoundary>6.0</upperBoundary>",
+        )
+        .replace(
+            "<lowerBoundary>2.0</lowerBoundary>",
+            "<lowerBoundary>7.0</lowerBoundary>",
+        )
+        .replace(
+            "<upperBoundary>2.0</upperBoundary>",
+            "<upperBoundary>0.0</upperBoundary>",
+        );
+    let bore = parse_bhr_g(&xml).unwrap();
+
+    assert_eq!(bore.intervals[0].upper_boundary, 0.0);
+    assert_eq!(bore.intervals[1].upper_boundary, 6.0);
+}
+
+#[test]
+fn rejects_non_finite_geotechnical_interval_boundary_with_slash_path() {
     let non_finite = include_str!("fixtures/bhr-gt-minimal.xml").replace(
         "<upperBoundary>0.0</upperBoundary>",
         "<upperBoundary>NaN</upperBoundary>",
@@ -178,7 +219,35 @@ fn rejects_non_finite_and_reversed_interval_boundaries_with_slash_paths() {
         parse_bhr_gt(&non_finite),
         Err(BroError::InvalidValue { path, .. }) if path.contains("/layer/upperBoundary")
     ));
+}
 
+#[test]
+fn rejects_reversed_geotechnical_interval_boundary_with_slash_path() {
+    let reversed = include_str!("fixtures/bhr-gt-minimal.xml").replacen(
+        "<lowerBoundary>1.5</lowerBoundary>",
+        "<lowerBoundary>0.0</lowerBoundary>",
+        1,
+    );
+    assert!(matches!(
+        parse_bhr_gt(&reversed),
+        Err(BroError::InvalidValue { path, .. }) if path.contains("/layer/lowerBoundary")
+    ));
+}
+
+#[test]
+fn rejects_non_finite_geological_interval_boundary_with_slash_path() {
+    let non_finite = include_str!("fixtures/bhr-g-minimal.xml").replace(
+        "<upperBoundary>0.0</upperBoundary>",
+        "<upperBoundary>NaN</upperBoundary>",
+    );
+    assert!(matches!(
+        parse_bhr_g(&non_finite),
+        Err(BroError::InvalidValue { path, .. }) if path.contains("/layer/layer/upperBoundary")
+    ));
+}
+
+#[test]
+fn rejects_reversed_geological_interval_boundary_with_slash_path() {
     let reversed = include_str!("fixtures/bhr-g-minimal.xml").replacen(
         "<lowerBoundary>2.0</lowerBoundary>",
         "<lowerBoundary>0.0</lowerBoundary>",

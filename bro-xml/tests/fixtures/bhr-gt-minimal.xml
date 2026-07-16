@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <BHR_GT_O xmlns="http://www.broservices.nl/xsd/dsbhr-gt/2.1">
   <broId>BHR000000000001</broId>
-  <finalDepth>4.0</finalDepth>
+  <finalDepthBoring>4.0</finalDepthBoring>
   <boring>
     <boringProcedure>handboring</boringProcedure>
   </boring>
@@ -13,7 +13,7 @@
       <geotechnicalSoilName>sterkSiltigeKlei</geotechnicalSoilName>
       <colour>bruin</colour>
       <description>matig vast</description>
-      <organicMatterContent>zwakHumeus</organicMatterContent>
+      <organicMatterContentClass>zwakHumeus</organicMatterContentClass>
     </layer>
     <layer>
       <upperBoundary>1.5</upperBoundary>

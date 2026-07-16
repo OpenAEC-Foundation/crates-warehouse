@@ -58,7 +58,7 @@ pub(crate) fn parse(xml_source: &str, options: ParseOptions) -> Result<BhrGDocum
 
     Ok(BhrGDocument {
         common,
-        final_depth: optional_finite_number(&collected, "finalDepth")?,
+        final_depth: optional_finite_number(&collected, "finalDepthBoring")?,
         intervals: deduplicated,
         source_xml: options.retain_source.then(|| xml_source.to_owned()),
     })

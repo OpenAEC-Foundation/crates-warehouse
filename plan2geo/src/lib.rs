@@ -25,6 +25,21 @@ fn thema_uit_laag(laag: &str) -> &'static str {
         .collect();
     let heeft = |t: &str| tokens.iter().any(|x| *x == t);
 
+    // annotaties en omgeving eerst (anders vangen de disciplinetokens ze)
+    if l.contains("DIMENSION") || l.contains("SLASH") || l.contains("MAATV") || l.contains("BEMATING") {
+        return "maatvoering";
+    }
+    if l.contains("TOPOGRAPHY") || l.contains("TOPO")
+        || heeft("GEBOUW") || heeft("PAND") || heeft("WEGKANT") || heeft("BOOM")
+        || heeft("INRIT") || heeft("SLOOT") || heeft("HAAG") || heeft("HEK")
+    {
+        return "topografie";
+    }
+    // nutsbedrijf-conventies: G_SERVICE / G_30MB = gas-LD (aansluitingen, 30 mbar)
+    if l.contains("G_SERVICE") || l.contains("30MB") || l.contains("G_100MB") {
+        return "gasLageDruk";
+    }
+
     if heeft("MS") || l.contains("ET_MS") || l.contains("MIDDENSPANNING") {
         "middenspanning"
     } else if heeft("LS") || heeft("OVL") || l.contains("ET_LS") || l.contains("LAAGSPANNING") {
@@ -107,6 +122,14 @@ fn objecttype_uit_laag(laag: &str, is_lijn: bool, block: Option<&str>) -> Option
         .collect();
     let disc = disc_uit_laag(&l, &tokens);
 
+    // annotatie/omgeving krijgt nooit een objecttype
+    if matches!(thema_uit_laag(laag), "maatvoering" | "topografie") {
+        return None;
+    }
+    // nutsbedrijf-conventies: gas-aansluitleidingen en -aansluitpunten
+    if samen.contains("SERVICE_PIPE") || samen.contains("SERVICE_CONNECTION") || samen.contains("30MB") {
+        return Some(if is_lijn { "Gleiding" } else { "Goverdrachtspunt" });
+    }
     // expliciete puntobjecten eerst
     if samen.contains("MANTELBUIS") {
         return Some("Amantelbuis");

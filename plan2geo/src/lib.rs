@@ -242,9 +242,28 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
     let mut features: Vec<Value> = Vec::new();
     let mut stats = Stats { entiteiten: 0, gefilterd: 0, tekst_overgeslagen: 0 };
     let mut objecttypen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut viewports: Vec<Value> = Vec::new();
 
     for ent in doc.entities() {
         stats.entiteiten += 1;
+        // Paperspace-viewports: de exacte blad→model-transformatie (georeferentie
+        // van de plot-PDF). Alleen viewports die een RD-modelgebied tonen.
+        if let acadrust::entities::EntityType::Viewport(v) = ent {
+            if v.width > 0.0 && v.height > 0.0 && v.view_height > 0.0 {
+                // view_center is in DCS; bij een getwiste view geldt WCS = R(twist)·DCS.
+                // We exporteren raw waarden; de afnemer bepaalt de transformatie.
+                let schaal = v.view_height / v.height;
+                viewports.push(json!({
+                    "paperCenter": [round2(v.center.x), round2(v.center.y)],
+                    "paperSize": [round2(v.width), round2(v.height)],
+                    "viewCenterDcs": [round2(v.view_center.x), round2(v.view_center.y)],
+                    "viewHeight": round2(v.view_height),
+                    "twist": v.twist_angle,
+                    "schaal": round2(schaal),
+                }));
+            }
+            continue;
+        }
         let (geom, ent_type, laag, extra) = entity_geometry(ent);
 
         let Some(geometry) = geom else {
@@ -308,6 +327,14 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
     fc["baken"]["bron"]["gefilterdBuitenRd"] = json!(stats.gefilterd);
     fc["baken"]["bron"]["tekstOvergeslagen"] = json!(stats.tekst_overgeslagen);
     fc["baken"]["bron"]["objecttypen"] = json!(objecttypen);
+    if !viewports.is_empty() {
+        fc["baken"]["bron"]["viewports"] = json!(viewports);
+    }
+    let (pl_min, pl_max) = (doc.header.paper_space_limits_min, doc.header.paper_space_limits_max);
+    if pl_max.x > pl_min.x && pl_max.y > pl_min.y {
+        fc["baken"]["bron"]["paperLimits"] =
+            json!([round2(pl_min.x), round2(pl_min.y), round2(pl_max.x), round2(pl_max.y)]);
+    }
     Ok(fc)
 }
 

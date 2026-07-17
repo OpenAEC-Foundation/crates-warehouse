@@ -242,6 +242,7 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
     let mut features: Vec<Value> = Vec::new();
     let mut stats = Stats { entiteiten: 0, gefilterd: 0, tekst_overgeslagen: 0 };
     let mut objecttypen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut overgeslagen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut viewports: Vec<Value> = Vec::new();
 
     for ent in doc.entities() {
@@ -269,6 +270,8 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
         let Some(geometry) = geom else {
             if ent_type == "tekst" {
                 stats.tekst_overgeslagen += 1;
+            } else {
+                *overgeslagen.entry(ent_type.to_string()).or_insert(0) += 1;
             }
             continue;
         };
@@ -327,6 +330,9 @@ pub fn convert_cad_bytes(bytes: &[u8], bestandsnaam: &str, project: &str) -> Res
     fc["baken"]["bron"]["gefilterdBuitenRd"] = json!(stats.gefilterd);
     fc["baken"]["bron"]["tekstOvergeslagen"] = json!(stats.tekst_overgeslagen);
     fc["baken"]["bron"]["objecttypen"] = json!(objecttypen);
+    if !overgeslagen.is_empty() {
+        fc["baken"]["bron"]["overgeslagenTypen"] = json!(overgeslagen);
+    }
     if !viewports.is_empty() {
         fc["baken"]["bron"]["viewports"] = json!(viewports);
     }
@@ -371,6 +377,68 @@ fn entity_geometry(
             }
             (Some(json!({"type":"LineString","coordinates":pts})), "polylijn", p.common.layer.clone(), extra)
         }
+        E::Polyline2D(p) => {
+            let pts: Vec<[f64; 2]> = p
+                .vertices
+                .iter()
+                .map(|v| [round2(v.location.x), round2(v.location.y)])
+                .collect();
+            if pts.len() < 2 {
+                return (None, "lijn", p.common.layer.clone(), extra);
+            }
+            (Some(json!({"type":"LineString","coordinates":pts})), "polylijn", p.common.layer.clone(), extra)
+        }
+        E::Polyline3D(p) => {
+            let pts: Vec<[f64; 2]> = p
+                .vertices
+                .iter()
+                .map(|v| [round2(v.position.x), round2(v.position.y)])
+                .collect();
+            if pts.len() < 2 {
+                return (None, "lijn", p.common.layer.clone(), extra);
+            }
+            (Some(json!({"type":"LineString","coordinates":pts})), "polylijn", p.common.layer.clone(), extra)
+        }
+        E::Spline(s) => {
+            // benadering: fit-punten (of anders control-punten) als polylijn —
+            // NLCS kent geen splines, strooksgewijs zoals bij bogen
+            let bron_pts = if s.fit_points.len() >= 2 { &s.fit_points } else { &s.control_points };
+            let pts: Vec<[f64; 2]> = bron_pts.iter().map(|v| [round2(v.x), round2(v.y)]).collect();
+            if pts.len() < 2 {
+                return (None, "lijn", s.common.layer.clone(), extra);
+            }
+            (Some(json!({"type":"LineString","coordinates":pts})), "spline", s.common.layer.clone(), extra)
+        }
+        E::MLine(m) => {
+            let pts: Vec<[f64; 2]> = m
+                .vertices
+                .iter()
+                .map(|v| [round2(v.position.x), round2(v.position.y)])
+                .collect();
+            if pts.len() < 2 {
+                return (None, "lijn", m.common.layer.clone(), extra);
+            }
+            (Some(json!({"type":"LineString","coordinates":pts})), "polylijn", m.common.layer.clone(), extra)
+        }
+        E::Ellipse(e) => {
+            // param-boog: p(t) = center + major·cos t + minor·sin t,
+            // minor = 90°-gedraaide major × ratio
+            let (mx, my) = (e.major_axis.x, e.major_axis.y);
+            let (nx, ny) = (-my * e.minor_axis_ratio, mx * e.minor_axis_ratio);
+            let (t0, mut t1) = (e.start_parameter, e.end_parameter);
+            if t1 <= t0 {
+                t1 += std::f64::consts::TAU;
+            }
+            let n = 24usize;
+            let pts: Vec<[f64; 2]> = (0..=n)
+                .map(|i| {
+                    let t = t0 + (t1 - t0) * (i as f64) / (n as f64);
+                    [round2(e.center.x + mx * t.cos() + nx * t.sin()),
+                     round2(e.center.y + my * t.cos() + ny * t.sin())]
+                })
+                .collect();
+            (Some(json!({"type":"LineString","coordinates":pts})), "boog", e.common.layer.clone(), extra)
+        }
         E::Circle(c) => {
             extra.insert("straal".into(), json!(round2(c.radius)));
             (Some(json!({"type":"Point","coordinates":[round2(c.center.x), round2(c.center.y)]})), "cirkel", c.common.layer.clone(), extra)
@@ -388,6 +456,31 @@ fn entity_geometry(
         }
         E::Text(t) => (None, "tekst", t.common.layer.clone(), extra),
         E::MText(t) => (None, "tekst", t.common.layer.clone(), extra),
-        _ => (None, "overig", String::new(), extra),
+        overige => {
+            // niet-geometrische of (nog) niet omgezette typen: benoemen zodat
+            // de bron-envelop kan rapporteren wat er is overgeslagen
+            let naam = match overige {
+                E::Hatch(_) => "hatch",
+                E::Dimension(_) => "dimension",
+                E::Leader(_) => "leader",
+                E::MultiLeader(_) => "multileader",
+                E::Solid(_) => "solid",
+                E::Ray(_) | E::XLine(_) => "constructielijn",
+                E::Helix(_) => "helix",
+                E::Face3D(_) => "3dface",
+                E::Mesh(_) | E::PolyfaceMesh(_) => "mesh",
+                E::RasterImage(_) => "rasterimage",
+                E::Wipeout(_) => "wipeout",
+                E::AttributeDefinition(_) | E::AttributeEntity(_) => "attribuut",
+                E::Block(_) | E::BlockEnd(_) => "blockdef",
+                E::Solid3D(_) | E::Region(_) | E::Body(_) | E::Surface(_) => "3dsolid",
+                E::Table(_) => "tabel",
+                E::Tolerance(_) => "tolerantie",
+                E::Shape(_) => "shape",
+                E::Underlay(_) => "underlay",
+                _ => "overig",
+            };
+            (None, naam, String::new(), extra)
+        }
     }
 }

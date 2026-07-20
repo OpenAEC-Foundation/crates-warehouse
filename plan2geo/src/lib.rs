@@ -9,6 +9,9 @@ use baken_geo::{round2, Bron, Laagtype};
 use serde_json::{json, Map, Value};
 use std::io::Cursor;
 
+mod export;
+pub use export::{geojson_to_document, geojson_to_dwg, geojson_to_dxf};
+
 /// RD-geldigheidsbereik (EPSG:28992).
 fn in_rd(x: f64, y: f64) -> bool {
     (0.0..=300_000.0).contains(&x) && (300_000.0..=630_000.0).contains(&y)

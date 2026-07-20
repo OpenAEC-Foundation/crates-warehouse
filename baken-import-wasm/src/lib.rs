@@ -27,6 +27,19 @@ pub fn convert_cad(bytes: &[u8], bestandsnaam: &str, project: &str) -> Result<St
     serde_json::to_string(&fc).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Baken-ontwerplaag (GeoJSON) → DXF-bytes (ASCII CAD-interchange, opent in
+/// elk CAD-pakket) via RUST-DWG.
+#[wasm_bindgen]
+pub fn export_dxf(geojson: &str) -> Result<Vec<u8>, JsError> {
+    plan2geo::geojson_to_dxf(geojson).map_err(|e| JsError::new(&e))
+}
+
+/// Baken-ontwerplaag (GeoJSON) → native DWG-bytes via RUST-DWG.
+#[wasm_bindgen]
+pub fn export_dwg(geojson: &str) -> Result<Vec<u8>, JsError> {
+    plan2geo::geojson_to_dwg(geojson).map_err(|e| JsError::new(&e))
+}
+
 /// Versie-info voor de UI.
 #[wasm_bindgen]
 pub fn importer_versie() -> String {

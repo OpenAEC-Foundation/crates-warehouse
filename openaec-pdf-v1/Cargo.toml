@@ -1,0 +1,19 @@
+[package]
+name = "openaec-pdf-v1"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure Rust PDF page renderer — renders PDF pages to RGBA bitmaps"
+
+[dependencies]
+lopdf = "0.34"
+tiny-skia = "0.11"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+turbojpeg = { version = "1", default-features = false, features = ["image", "cmake"] }
+ttf-parser = "0.25"
+rayon = "1"
+hayro-font = "0.4.0"
+flate2 = "1"
+
+[dev-dependencies]
+libloading = "0.8"

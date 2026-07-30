@@ -34,6 +34,12 @@ members = [
     "baken-import-wasm",
 ]
 
+# Losstaande PDF-engine (eigen dependency-set, o.a. afwijkende lopdf-versie);
+# gearchiveerd in dit warehouse maar bouwt niet mee met de workspace.
+exclude = [
+    "openaec-pdf-v1",
+]
+
 [workspace.package]
 version = "0.1.1"
 edition = "2021"
